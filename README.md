@@ -15,3 +15,8 @@ Throughput, Average Latency <sup>(Across 16 clients, an event is sent in both di
 | Oracle OpenJDK 18.0.2.1 | 67.8 M event/s, 472 ns | 50.1 M event/s, 638 ns |
 
 [![Watch the video](https://user-images.githubusercontent.com/29354319/197382477-ce53b8cd-d432-4cd6-8b05-c9b7f93ba164.png)](https://youtu.be/qsybVQ5aDDk?t=1126)
+
+That is why the AdHoc protocol in Java actively uses value packets. Each packet, the information in the fields which fits into 8 bytes (primitive `long` type), is treated as a value packet. Java has no `value type` similar to the C# `struct`, so the only option is using primitives with annotations.
+```java
+   static @ValuePack long set(char src, @ValuePack long pack) {return (long)(pack & ~(255  << 32) | ((src) & (~0L))   << 32) ;}
+```
