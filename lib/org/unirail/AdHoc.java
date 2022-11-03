@@ -35,9 +35,16 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
+import java.math.BigInteger;
 
 
 public abstract class AdHoc {
+	private static final BigInteger ULONG_MASK = BigInteger.ONE.shiftLeft(Long.SIZE).subtract(BigInteger.ONE);
+	
+	public static String ulong(long src) {
+		return src < 0L ? BigInteger.valueOf(src).and(ULONG_MASK).toString() : Long.toString(src);
+	}
+	
 	private static int trailingZeros(int i) {
 		
 		int n = 7;
@@ -54,10 +61,10 @@ public abstract class AdHoc {
 		
 		return y == 0 ? n - (i << 1 >>> 31) : n - 2 - (y << 1 >>> 31);
 	}
-
-//region CRC
 	
-	private static final char tab[] = {0, 4129, 8258, 12387, 16516, 20645, 24774, 28903, 33032, 37161, 41290, 45419, 49548, 53677, 57806, 61935};
+	//region CRC
+	private static final int  CRC_LEN_BYTES = 2;//CRC len in bytes
+	private static final char tab[]         = {0, 4129, 8258, 12387, 16516, 20645, 24774, 28903, 33032, 37161, 41290, 45419, 49548, 53677, 57806, 61935};
 	
 	// !!!! Https://github.com/redis/redis/blob/95b1979c321eb6353f75df892ab8be68cf8f9a77/src/crc16.c
 	//Output for "123456789"     : 31C3 (12739)
@@ -82,6 +89,7 @@ public abstract class AdHoc {
 	
 	protected int bit;
 	
+	boolean pack_by_pack_mode = false;
 	
 	public    Object obj;
 	protected String str;
@@ -95,14 +103,6 @@ public abstract class AdHoc {
 	protected long u8;
 	public    int  bytes_left;
 	
-	protected @Assertion int assertion = Assertion.UNEXPECT;
-	
-	protected @interface Assertion {
-		int
-				PACK_END  = 2,
-				SPACE_END = 1,
-				UNEXPECT  = 0;
-	}
 	
 	public interface EXT {
 		
@@ -147,198 +147,264 @@ public abstract class AdHoc {
 		public AdHoc.INT.BytesDst.Consumer int_dst;
 		
 		private final int id_bytes;
-		
 		public Receiver(AdHoc.INT.BytesDst.Consumer int_dst, int id_bytes) {
+			
 			this.int_dst = int_dst;
 			bytes_left   = this.id_bytes = id_bytes;
 		}
 		
 		
-		public static class UART implements EXT.BytesDst {
+		public static class Framing implements EXT.BytesDst {
 			@Override public boolean isOpen() {return dst.isOpen();}
 			@Override public void close()     {dst.close();}
 			public Receiver dst;
+			public Framing(Receiver dst) {(this.dst = dst).pack_by_pack_mode = true;}
 			
-			public UART(Receiver dst) {this.dst = dst;}
-			
+			private void reset() {
+				
+				bits  = 0;
+				shift = 0;
+				crc0  = 0;
+				crc1  = 0;
+				crc   = 0;
+				put   = 0;
+				BYTE  = 0;
+				
+				if (!FF)//not on next frame start position... switch to search next frame start position mode
+					state = State.SEEK_FF;
+				
+				dst.write(null);//fully cleanup
+			}
 			
 			@Override public int write(ByteBuffer src) {
 				if (src == null)
 				{
-					dst.write(null);
-					dec_bits  = 0;
-					dec_shift = 0;
-					dec_crc   = 0;
-					dec_bytes = 0;
-					
-					dec_byte  = 0;
-					dec_state = State.NORMAL;
+					reset();
 					return -1;
 				}
-				int r = 0;
-				if (src.position() < 1)//no space before position
-				{
-					r = 1;// copy first byte to expand in the adhoc buffer
-					dec_buffer.clear();
-					dec_buffer.put(1, src.get());
-					dec_buffer.position(1).limit(2);
-					write_int(dec_buffer);
-				}
-				
-				return write_int(src) + r;
-			}
-			
-			//in-place decoding.
-			// zero index is reserved for decoding purpose to prevent overlapping
-			private int write_int(ByteBuffer src) {
-				
 				int remaining = src.remaining();
 				if (remaining < 1) return 0;
 				final int limit = src.limit();
-				int       put   = 0;
+				put = 0;
+
+
 init:
-				switch (dec_state)
+				switch (state)
 				{
-					case State.SEEK_FF_SYNC://bytes distortion was detected, skip bytes until FF sync mark
+					case State.SEEK_FF://bytes distortion was detected, skip bytes until FF sync mark
 						while (src.hasRemaining())
 							if (src.get() == (byte) 0xFF)
 							{
-								dec_state = State.NORMAL;
+								state = State.NORMAL;
+								if (FF) error_handler.error(Error.FFFF_ERROR);
+								FF = true;
 								if (src.hasRemaining()) break init;
+								
 								return remaining;
 							}
+							else FF = false;
 						return remaining;
 					
-					case State.PLACE1:
+					case State.Ox7F:
 						
-						dec_bits |= (((dec_byte = src.get() & 0xFF) & 1) << 7 | 0x7F) << dec_shift;
-						put(src, put++);
+						if (FF = (BYTE = src.get() & 0xFF) == 0xFF)//FF here is an error
+						{
+							reset();
+							break init;
+						}
+						
+						bits |= ((BYTE & 1) << 7 | 0x7F) << shift;
+						put(src, 0);
+						write(src, 1, State.NORMAL);
+						src.position(1).limit(limit);
 					
-					case State.PLACE2:
+					case State.Ox7F_:
 						
-						while (dec_byte == 0x7F)
+						while (BYTE == 0x7F)
 						{
 							if (!src.hasRemaining())
 							{
-								write(src, put, Assertion.SPACE_END, State.PLACE2, Error.BYTES_DISTORTION);
+								write(src, put, State.Ox7F_);
 								return remaining;
 							}
 							
-							dec_bits |= ((dec_byte = src.get() & 0xFF) << 6 | 0x3F) << dec_shift;
-							if ((dec_shift += 7) < 8) continue;
-							dec_shift -= 8;
+							if (FF = (BYTE = src.get() & 0xFF) == 0xFF)//FF here is an error
+							{
+								reset();
+								break init;
+							}
+							
+							bits |= (BYTE << 6 | 0x3F) << shift;
+							if ((shift += 7) < 8) continue;
+							shift -= 8;
 							
 							put(src, put++);
 						}
 						
-						dec_state = State.NORMAL;
 						
-						dec_bits |= dec_byte >> 1 << dec_shift;
-						if ((dec_shift += 7) < 8) break;
+						bits |= BYTE >> 1 << shift;
+						if ((shift += 7) < 8) break;
 						
-						dec_shift -= 8;
+						shift -= 8;
 						
+						if (src.position() == put)
+						{
+							write(src, put, State.NORMAL);
+							src.position(put).limit(limit);
+							put = 0;
+						}
 						put(src, put++);
+						
+						state = State.NORMAL;
 				}
 				
 				while (src.hasRemaining())
 				{
-					if ((dec_byte = src.get() & 0xFF) == 0x7F)
+					if ((BYTE = src.get() & 0xFF) == 0x7F)
 					{
 						if (!src.hasRemaining())
 						{
-							write(src, put, Assertion.SPACE_END, State.PLACE1, Error.BYTES_DISTORTION);
+							write(src, put, State.Ox7F);
 							return remaining;
 						}
 						
-						dec_bits |= (((dec_byte = src.get() & 0xFF) & 1) << 7 | 0x7F) << dec_shift;
+						if (FF = (BYTE = src.get() & 0xFF) == 0xFF)//FF here is an error
+						{
+							reset();
+							continue;
+						}
+						
+						bits |= ((BYTE & 1) << 7 | 0x7F) << shift;
 						
 						put(src, put++);
 						
-						while (dec_byte == 0x7F)
+						while (BYTE == 0x7F)
 						{
 							if (!src.hasRemaining())
 							{
-								write(src, put, Assertion.SPACE_END, State.PLACE2, Error.BYTES_DISTORTION);
+								write(src, put, State.Ox7F_);
 								return remaining;
 							}
 							
-							dec_bits |= (((dec_byte = src.get() & 0xFF) & 1) << 6 | 0x3F) << dec_shift;
-							if ((dec_shift += 7) < 8) continue;
+							if (FF = (BYTE = src.get() & 0xFF) == 0xFF)//FF here is an error
+							{
+								reset();
+								continue;
+							}
 							
-							dec_shift -= 8;
+							bits |= ((BYTE & 1) << 6 | 0x3F) << shift;
+							if ((shift += 7) < 8) continue;
+							
+							shift -= 8;
 							
 							put(src, put++);
 						}
 						
-						dec_bits |= dec_byte >> 1 << dec_shift;
-						if ((dec_shift += 7) < 8) continue;
+						bits |= BYTE >> 1 << shift;
+						if ((shift += 7) < 8) continue;
 						
-						dec_shift -= 8;
+						shift -= 8;
 					}
-					else if (dec_byte == 0xFF)  //mark
+					else if (BYTE == 0xFF)  //starting new  frame mark byte
 					{
-						dec_bits  = 0;
-						dec_shift = 0;
-						
-						if (put + dec_bytes < dst.id_bytes)
+						if (FF)
 						{
-							dec_bytes = 0;
-							error_handler.error(Error.TOO_SHORT_PACK);
-							continue;//maybe bytes lost
+							error_handler.error(Error.FFFF_ERROR);
+							continue;
 						}
 						
-						dec_bytes = 0;
+						FF = true;
+						final int fix = src.position();//store position
+						write(src, put, State.NORMAL);
+						src.limit(limit).position(fix);//restore position
 						
-						if (src.getChar(put - 2) == dec_fix_crc[put - 3 & 3])//last two bytes is checksum. check it
-						{
-							int fix = src.position();
-							write(src, put - 2, Assertion.PACK_END, State.NORMAL, Error.BYTES_DISTORTION);
-							src.limit(limit).position(fix);
-							put = 0;
-						}
-						else //bad CRC
-						{
-							error_handler.error(Error.CRC_ERROR);
-							dst.write(null);
-						}
-						
-						this.dec_state = State.NORMAL;
 						continue;
 					}
-					else dec_bits |= dec_byte << dec_shift;
+					else bits |= BYTE << shift;
 					
+					FF = false;
 					put(src, put++);
 				}
+				write(src, put, State.NORMAL);
 				
-				write(src, put, Assertion.SPACE_END, State.NORMAL, Error.BYTES_DISTORTION);
 				return remaining;
 			}
-			private void write(ByteBuffer src, int limit, int assertion, int state_if_ok, int error) {
-				dec_bytes += limit;//fix the number of bytes already processed
-				dst.assertion = assertion;
+			
+			
+			private void write(ByteBuffer src, int limit, int state_if_ok) {
+				state = state_if_ok;
+				if (limit == 0) return;//no decoded bytes
 				
-				src.position(0).limit(limit);
+				src.position(0).limit(limit);//positioning on the decoded bytes section
 				
 				dst.write(src);
 				
-				if (dst.assertion != assertion)
+				if (dst.mode == OK)//exit from dst.write(src) is not because there is not enough data
 				{
-					error_handler.error(error);
-					dst.write(null);
-					dec_state = State.SEEK_FF_SYNC;
+					if (dst.slot != null && dst.slot.dst != null)//there is a `fully received packet`, waiting for CRC check and dispatching, if check is OK
+					{
+						//fully received packet here
+						int bytes_left = src.remaining();
+						if (bytes_left == CRC_LEN_BYTES)
+						{
+							dst.u4 = src.getChar();//received CRC
+							CHECK_CRC_THEN_DISPATCH();
+							return;
+						}
+						
+						if (bytes_left < CRC_LEN_BYTES)//not enough bytes for crc
+						{
+							RECEIVING_CRC = true;//switch receiving crc mode
+							
+							//prepare variables
+							dst.u4         = 0;//received CRC
+							dst.bytes_left = CRC_LEN_BYTES - 1;
+							
+							for (; 0 < bytes_left; bytes_left--, dst.bytes_left--)//collect already available crc bytes
+							     dst.u4 |= (src.get() & 0xFF) << bytes_left * 8;
+							return;
+						}
+						
+						// packet received but CRC_LEN_BYTES < src.remaining() (bytes left more than CRC_LEN_BYTES)  - this is not normal
+					}
+					
+					//consumed bytes does not produce packet. this is error
+					error_handler.error(Error.BYTES_DISTORTION);//error notification
+					reset();
 				}
-				else dec_state = state_if_ok;
+				else if (FF)//not enough bytes to complete the current packet but already next pack frame detected. error
+				{
+					error_handler.error(Error.BYTES_DISTORTION);
+					reset();
+				}
+			}
+			private void put(ByteBuffer dst, int put) {
+								
+				crc  = crc1; //shift crc
+				crc1 = crc0;
 				
-				dst.assertion = Assertion.UNEXPECT;//return to normal state
+				if (RECEIVING_CRC)
+				{
+					this.dst.u4 |= (bits & 0xFF) << (this.dst.bytes_left * 8);
+					if ((this.dst.bytes_left -= 1) == -1) CHECK_CRC_THEN_DISPATCH();
+				}
+				else
+				{
+					crc0 = crc16(bits, crc1);
+					dst.put(put, (byte) bits);
+				}
+				
+				bits >>= 8;
+				
 			}
 			
+			boolean RECEIVING_CRC = false;
 			
-			private void put(ByteBuffer dst, int put) {
-				dec_fix_crc[put & 3] = dec_crc = crc16(dec_bits, dec_crc);
-				
-				dst.put(put, (byte) dec_bits);
-				dec_bits >>= 8;
+			void CHECK_CRC_THEN_DISPATCH() {
+				RECEIVING_CRC = false;
+				if (crc == dst.u4) dst.int_dst.received(dst, dst.slot.dst);//dispatching
+				else error_handler.error(Error.CRC_ERROR);//bad CRC
+				reset();
 			}
 			
 			
@@ -346,26 +412,24 @@ init:
 			
 			public @interface Error {
 				int
-						TOO_SHORT_PACK   = 0,
+						FFFF_ERROR       = 0,
 						CRC_ERROR        = 1,
 						BYTES_DISTORTION = 3;
 				
 				interface Handler {
-					Handler DEFAULT = new Handler() {
-						@Override public void error(int error) {
-							switch (error)
-							{
-								case TOO_SHORT_PACK:
-									System.err.println("====================TOO_SHORT_PACK");
-									return;
-								case CRC_ERROR:
-									System.err.println("===================CRC_ERROR");
-									return;
-								case BYTES_DISTORTION:
-									System.err.println("===================BYTES_DISTORTION");
-									return;
-								
-							}
+					Handler DEFAULT = error -> {
+						switch (error)
+						{
+							case FFFF_ERROR:
+								System.err.println("====================FFFF_ERROR");
+								return;
+							case CRC_ERROR:
+								System.err.println("===================CRC_ERROR");
+								return;
+							case BYTES_DISTORTION:
+								System.err.println("===================BYTES_DISTORTION");
+								return;
+							
 						}
 					};
 					
@@ -373,24 +437,25 @@ init:
 				}
 			}
 			
-			private final ByteBuffer dec_buffer = ByteBuffer.wrap(new byte[3]);//auxiliary buffer
 			
+			private int  bits  = 0;
+			private int  put   = 0;//place where put decoded
+			private int  shift = 0;
+			private char crc   = 0;
+			private char crc0  = 0;
+			private char crc1  = 0;
+			private int  BYTE  = 0;//fix fetched byte
 			
-			private       int    dec_bits    = 0;
-			private       int    dec_shift   = 0;
-			private       char   dec_crc     = 0;
-			private final char[] dec_fix_crc = new char[4];//last 4 checksum
-			private       int    dec_bytes   = 0;//decoded bytes so fsr
-			private       int    dec_byte    = 0;//fix fetched byte
+			private boolean FF = false;
 			
-			private @State int dec_state = State.NORMAL;
+			private @State int state = State.SEEK_FF;
 			
 			private @interface State {
 				int
-						NORMAL       = 0,
-						PLACE1       = 1,
-						PLACE2       = 2,
-						SEEK_FF_SYNC = 3;
+						NORMAL  = 0,
+						Ox7F    = 2,
+						Ox7F_   = 3,
+						SEEK_FF = 4;
 			}
 		}
 
@@ -418,19 +483,6 @@ init:
 			public Slot(Slot prev) {
 				this.prev = prev;
 				if (prev != null) prev.next = this;
-			}
-			@Override public String toString() {
-				Slot s = this;
-				while (s.prev != null) s = s.prev;
-				String str = "\n";
-				for (int i = 0; ; i++)
-				{
-					for (int ii = i; 0 < ii; ii--) str += "\t";
-					str += s.dst.getClass() + "\n";
-					if (s == this) break;
-					s = s.next;
-				}
-				return str;
 			}
 			public ContextExt context;
 		}
@@ -737,33 +789,12 @@ init:
 			u4 = u4 << bytes_left * 8 | get4(bytes_left);
 			return false;
 		}
-		@Override public String toString() {
-			return "Receiver{" +
-			       "\t\n bit=" + bit +
-			       "\t\n str='" + internal_string + '\'' +
-			       "\t\n bits=" + bits +
-			       "\t\n buffer=" + buffer +
-			       "\t\n mode=" + mode +
-			       "\t\n u4=" + u4 +
-			       "\t\n u8=" + u8 +
-			       "\t\n bytes_left=" + bytes_left +
-			       "\t\n assertion=" + assertion +
-			       "\t\n id_bytes=" + id_bytes +
-			       "\t\n OutputConsumer=" + int_dst +
-			       "\t\n slot=" + slot +
-			       "\t\n slot_ref=" + slot_ref +
-			       "\t\n context=" + context +
-			       "\t\n context_ref=" + context_ref +
-			       '}';
-		}
-		
 		// if src == null - clear and reset
 		public int write(ByteBuffer src) {
 			
 			if (src == null)
 			{
-				buffer    = null;
-				assertion = Assertion.UNEXPECT;
+				buffer = null;
 				if (slot == null) return 0;
 				mode            = OK;
 				bytes_left      = id_bytes;
@@ -783,11 +814,6 @@ init:
 			}
 			
 			final int remaining = src.remaining();
-			if (remaining < 1) if (assertion == Assertion.PACK_END)//PACK_END unexpected.
-			{
-				assertion = Assertion.UNEXPECT;
-				return -1;
-			}
 			
 			buffer = src;
 write:
@@ -875,29 +901,14 @@ write:
 				u4         = 0;
 				slot.state = 0;
 				
-				switch (assertion)
-				{
-					case Assertion.SPACE_END://unexpected. discard data.
-						assertion = Assertion.UNEXPECT;
-						return -1;
-					case Assertion.PACK_END://expected
-						int_dst.received(this, slot.dst);//dispatching
-						slot.dst = null; //ready to read next packet data
-						return remaining;
-				}
+				if (pack_by_pack_mode) return remaining - src.remaining();//do not clean up, do not dispatch, return length of processed bytes
 				
 				int_dst.received(this, slot.dst);//dispatching
-				
 				slot.dst = null; //ready to read next packet data
-			}//write:
+				
+			}//write: loop
 			
 			buffer = null;
-			
-			if (assertion == Assertion.PACK_END)//PACK_END unexpected.
-			{
-				assertion = Assertion.UNEXPECT;
-				return -1;
-			}
 			
 			return remaining;
 		}
@@ -1192,6 +1203,18 @@ write:
 		
 		public void close()     {write(null);}
 		
+		@Override public String toString() {
+			Slot s = slot;
+			while (s.prev != null) s = s.prev;
+			StringBuilder str    = new StringBuilder();
+			String        offset = "";
+			for (; s != slot; s = s.next, offset += "\t")
+			     str.append(offset).append(s.dst.getClass().getCanonicalName()).append("\t").append(state()).append("\n");
+			
+			str.append(offset).append(s.dst.getClass().getCanonicalName()).append("\t").append(state()).append("\n");
+			
+			return str.toString();
+		}
 	}
 	
 	public static class Transmitter extends AdHoc implements EXT.BytesSrc, Context.Provider {
@@ -1203,99 +1226,99 @@ write:
 			this.int_values_src = int_values_src;
 		}
 		
-		public static class UART implements EXT.BytesSrc {
+		public static class Framing implements EXT.BytesSrc {
 			
 			public Transmitter src;
-			public UART(Transmitter src) {this.src = src;}
+			public Framing(Transmitter src) {
+				src.pack_by_pack_mode = true;//switch to pack-by-pack mode
+				this.src              = src;
+			}
 			
 			@Override public int read(ByteBuffer dst) {
 				if (dst == null)
 				{
-					src.read(dst);
-					enc_bits  = 0;
-					enc_shift = 0;
-					enc_crc   = 0;
+					src.read(null);
+					bits  = 0;
+					shift = 0;
+					crc   = 0;
 					return -1;
 				}
 				
+				final int fix_position = dst.position();
 				
-				final int fix_p = dst.position();
-				
-				while (12 < dst.remaining())
+				while (dst.hasRemaining())
 				{
-					final int fix = dst.position();
-					int       s   = fix + dst.remaining() / 8 + 3;
-					dst.position(s);
+					final boolean write_starting_frame_byte_FF = src.slot == null || src.slot.src == null;
 					
-					src.assertion = Assertion.SPACE_END;//expect by default
-					src.read(dst);
+					final int enc_position = dst.position();//where start to put encoded bytes
+					int       raw_position = enc_position + dst.remaining() / 8 + CRC_LEN_BYTES + 1 + 2;// + 1 for 0xFF byte - frame start mark. start position for temporarily storing raw bytes from the source
 					
-					final int max = dst.position();
-					dst.position(fix);
+					dst.position(raw_position);
 					
+					int len = src.read(dst);
 					
-					if (src.assertion == Assertion.UNEXPECT || s == max) break;
+					final int raw_max = dst.position();
+					dst.position(enc_position);
 					
-					for (; s < max; s++) encode(dst.get(s) & 0xFF, dst);
+					if (len < 1) return fix_position < enc_position ? enc_position - fix_position : len;
 					
-					if (src.assertion == Assertion.PACK_END)
+					if (write_starting_frame_byte_FF) dst.put((byte) 0xFF);//write starting frame byte
+					
+					for (; raw_position < raw_max; raw_position++) encode(dst.get(raw_position) & 0xFF, dst);
+					
+					if (src.slot == null || src.slot.src == null)//the packet sending completed
 					{
-						final int crc = enc_crc;
-						encode(crc >> 8 & 0xFF, dst);
-						encode(crc & 0xFF, dst);
+						final int fix = crc;// crc will continue counting on call encode(), so fix it
+						encode(fix >> 8 & 0xFF, dst);
+						encode(fix & 0xFF, dst);
+						if (0 < shift) dst.put((byte) bits);
 						
-						if (0 < enc_shift) dst.put((byte) enc_bits);
-						
-						enc_bits  = 0;
-						enc_shift = 0;
-						enc_crc   = 0;
-						
-						dst.put((byte) 0xFF);
+						bits  = 0;
+						shift = 0;
+						crc   = 0;
 					}
 				}
 				
-				src.assertion = Assertion.UNEXPECT;//return to normal state
-				
-				return 0 < dst.position() - fix_p ? dst.position() - fix_p : -1;
+				return fix_position < dst.position() ? dst.position() - fix_position : 0;
 			}
 			
 			private void encode(int src, ByteBuffer dst) {
 				
-				enc_crc = crc16(src, enc_crc);
-				final int v = (enc_bits |= src << enc_shift) & 0xFF;
+				crc = crc16(src, crc);
+				final int v = (bits |= src << shift) & 0xFF;
 				
 				if ((v & 0x7F) == 0x7F)
 				{
 					dst.put((byte) 0x7F);
-					enc_bits >>= 7;
+					bits >>= 7;
 					
-					if (enc_shift < 7) enc_shift++;
+					if (shift < 7) shift++;
 					else //                          a full byte in enc_bits
 					{
-						if ((enc_bits & 0x7F) == 0x7F)
+						if ((bits & 0x7F) == 0x7F)
 						{
 							dst.put((byte) 0x7F);
-							enc_bits >>= 7;
+							bits >>= 7;
 							
-							enc_shift = 1;
+							shift = 1;
 							return;
 						}
 						
-						dst.put((byte) enc_bits);
-						enc_shift = 0;
+						dst.put((byte) bits);
+						shift = 0;
 						
-						enc_bits = 0;
+						bits = 0;
 					}
 					return;
 				}
 				
 				dst.put((byte) v);
-				enc_bits >>= 8;
+				bits >>= 8;
 			}
 			
-			private int  enc_bits  = 0;
-			private int  enc_shift = 0;
-			private char enc_crc   = 0;
+			private int  bits  = 0;
+			private int  shift = 0;
+			private char crc   = 0;
 			@Override public boolean isOpen() {return src.isOpen();}
 			@Override public void close()     {read(null);}
 		}
@@ -1485,13 +1508,16 @@ write:
 		}
 		
 		// if dst == null - clean / reset state
+		//
+		// if 0 < return - bytes read
+		// if return == 0 - not enough space available
+		// if return == -1 -  no more packets left
 		public int read(ByteBuffer dst) {
 			
 			if (dst == null)//reset
 			{
 				if (slot == null) return -1;
-				buffer    = null;
-				assertion = Assertion.UNEXPECT;
+				buffer = null;
 				
 				while (slot != null)
 				{
@@ -1521,8 +1547,6 @@ read:
 						final int ret = buffer.position() - position;
 						buffer = null;
 						free_slot();//remove hard links
-						
-						assertion = Assertion.UNEXPECT;
 						
 						return 0 < ret ? ret : -1;
 					}
@@ -1583,21 +1607,17 @@ read:
 				
 				int_src.sent(this, slot.src);
 				slot.src = null; //sing of next packet data request
-				if (assertion == Assertion.UNEXPECT) continue;
+				if (!pack_by_pack_mode) continue;
 				
-				slot      = null;
-				assertion = Assertion.PACK_END;
-				
+				free_slot();//remove hard links
 				break;
 			}
 			
 			int ret = buffer.position() - position;
 			buffer = null;
 			
-			//if (outcome != Outcome.UNEXPECT) outcome = Outcome.SPACE_END;
-			
 			return ret; // number of bytes read
-		}
+		}// read loop
 		
 		
 		public void put(Boolean src) {put_bits(src == null ? 0 : src ? 1 : 2, 2);}
@@ -2154,5 +2174,18 @@ read:
 		
 		//cleanup on close
 		public void close() {read(null);}
+		
+		@Override public String toString() {
+			Slot s = slot;
+			while (s.prev != null) s = s.prev;
+			StringBuilder str    = new StringBuilder();
+			String        offset = "";
+			for (; s != slot; s = s.next, offset += "\t")
+			     str.append(offset).append(s.src.getClass().getCanonicalName()).append("\t").append(state()).append("\n");
+			
+			str.append(offset).append(s.src.getClass().getCanonicalName()).append("\t").append(state()).append("\n");
+			
+			return str.toString();
+		}
 	}
 }
