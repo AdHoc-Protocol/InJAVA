@@ -1,1063 +1,1083 @@
-// AdHoc protocol - data interchange format and source code generator
-// Copyright 2020 Chikirev Sirguy, Unirail Group. All rights reserved.
-// cheblin@gmail.org
-// https://github.com/cheblin/AdHoc-protocol
+//  MIT License
 //
-// Redistribution and use in source and binary forms, with or without
-// modification, are permitted provided that the following conditions are
-// met:
+//  Copyright © 2020 Chikirev Sirguy, Unirail Group. All rights reserved.
+//  For inquiries, please contact:  al8v5C6HU4UtqE9@gmail.com
+//  GitHub Repository: https://github.com/AdHoc-Protocol
 //
-//     * Redistributions of source code must retain the above copyright
-// notice, this list of conditions and the following disclaimer.
-//     * Redistributions in binary form must reproduce the above
-// copyright notice, this list of conditions and the following disclaimer
-// in the documentation and/or other materials provided with the
-// distribution.
+//  Permission is hereby granted, free of charge, to any person obtaining a copy
+//  of this software and associated documentation files (the "Software"), to use,
+//  copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+//  the Software, and to permit others to do so, under the following conditions:
 //
-// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+//  1. The above copyright notice and this permission notice must be included in all
+//     copies or substantial portions of the Software.
+//
+//  2. Users of the Software must provide a clear acknowledgment in their user
+//     documentation or other materials that their solution includes or is based on
+//     this Software. This acknowledgment should be prominent and easily visible,
+//     and can be formatted as follows:
+//     "This product includes software developed by Chikirev Sirguy and the Unirail Group
+//     (https://github.com/AdHoc-Protocol)."
+//
+//  3. If you modify the Software and distribute it, you must include a prominent notice
+//     stating that you have changed the Software.
+//
+//  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+//  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+//  FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. IN NO EVENT SHALL THE
+//  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER
+//  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM,
+//  OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+//  SOFTWARE.
 package org.unirail;
 
+import java.io.IOException;
+import java.io.OutputStream;
+import java.io.PrintStream;
+import java.lang.annotation.ElementType;
+import java.lang.annotation.Target;
 import java.lang.ref.SoftReference;
+import java.net.*;
 import java.nio.ByteBuffer;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.channels.WritableByteChannel;
-import java.nio.charset.StandardCharsets;
-import java.util.Arrays;
+import java.time.Duration;
+import java.util.*;
+import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicReferenceFieldUpdater;
 import java.util.function.Consumer;
-import java.util.function.LongSupplier;
-import java.math.BigInteger;
+import java.util.function.Supplier;
 
+import org.unirail.collections.LongRingBuffer;
+import org.unirail.collections.RingBuffer;
 
 public abstract class AdHoc {
-	private static final BigInteger ULONG_MASK = BigInteger.ONE.shiftLeft(Long.SIZE).subtract(BigInteger.ONE);
+//region CRC
 	
-	public static String ulong(long src) {
-		return src < 0L ? BigInteger.valueOf(src).and(ULONG_MASK).toString() : Long.toString(src);
-	}
+	private static final int  CRC_LEN_BYTES = 2; //CRC len in bytes
+	private static final char tab[]         = { 0, 4129, 8258, 12387, 16516, 20645, 24774, 28903, 33032, 37161, 41290, 45419, 49548, 53677, 57806, 61935 };
 	
-	private static int trailingZeros(int i) {
-		
-		int n = 7;
-		i <<= 24;
-		int y = i << 4;
-		
-		if (y != 0)
-		{
-			n -= 4;
-			i = y;
-		}
-		
-		y = i << 2;
-		
-		return y == 0 ? n - (i << 1 >>> 31) : n - 2 - (y << 1 >>> 31);
-	}
-	
-	//region CRC
-	private static final int  CRC_LEN_BYTES = 2;//CRC len in bytes
-	private static final char tab[]         = {0, 4129, 8258, 12387, 16516, 20645, 24774, 28903, 33032, 37161, 41290, 45419, 49548, 53677, 57806, 61935};
-	
-	// !!!! Https://github.com/redis/redis/blob/95b1979c321eb6353f75df892ab8be68cf8f9a77/src/crc16.c
-	//Output for "123456789"     : 31C3 (12739)
-	private static char crc16(int src, char crc) {
+	//!!!!
+	//Https://github.com/redis/redis/blob/95b1979c321eb6353f75df892ab8be68cf8f9a77/src/crc16.c
+	//Output for "123456789" : 31C3 (12739)
+	private static char crc16( int src, char crc ) {
 		src &= 0xFF;
 		crc = (char) (tab[(crc >> 12 ^ src >> 4) & 0x0F] ^ crc << 4);
 		return (char) (tab[(crc >> 12 ^ src & 0x0F) & 0x0F] ^ crc << 4);
 	}
-
 //endregion
 	
-	
-	private static final int OK = Integer.MAX_VALUE,
-			STR                 = OK - 100,
-			DONE                = STR + 1,
-			VAL4                = DONE + 1,
-			VAL8                = VAL4 + 1,
-			LEN                 = VAL8 + 1, BASE_LEN = LEN + 1,
-			BITS                = BASE_LEN + 1,
-			VARINTS             = BITS + 1,
-			VARINT              = VARINTS + 1;
+	protected static final int
+			OK         = Integer.MAX_VALUE - 10,
+			STR        = OK - 100,
+			RETRY      = STR + 1,
+			VAL4       = RETRY + 1,
+			VAL8       = VAL4 + 1,
+			INT1       = VAL8 + 1,
+			INT2       = INT1 + 1,
+			INT4       = INT2 + 1,
+			LEN0       = INT4 + 1,
+			LEN1       = LEN0 + 1,
+			LEN2       = LEN1 + 1,
+			BITS       = LEN2 + 1,
+			BITS_BYTES = BITS + 1,
+			VARINT     = BITS_BYTES + 1;
 	
 	protected int bit;
 	
-	boolean pack_by_pack_mode = false;
+	public String str;
 	
-	public    Object obj;
-	protected String str;
-	
-	protected String     internal_string;
 	protected int        bits;
 	protected ByteBuffer buffer;
 	protected int        mode;
 	
+	public String print_data() {
+		final StringBuilder sb = new StringBuilder();
+		sb.append( "Position: " ).append( buffer.position() ).append( ", Limit: " ).append( buffer.limit() ).append( ", Capacity: " ).append( buffer.capacity() ).append( '\n' );
+		
+		for( int i = 0; i < buffer.limit(); i++ )
+		{
+			byte b = buffer.get( i );
+			sb.append( String.format( i == buffer.position() ? "%02X*" : "%02X ", b ) );
+			
+			//Print in rows of 16 bytes
+			if( (i + 1) % 16 == 0 || i == buffer.limit() - 1 )
+				sb.append( '\n' );
+			else if( (i + 1) % 8 == 0 )
+				sb.append( " " );
+		}
+		
+		return sb.toString();
+	}
+	
 	protected int  u4;
-	protected long u8;
-	public    int  bytes_left;
+	public    long u8;
+	public    long u8_;
+	protected int  bytes_left;
+	protected int  bytes_max;
 	
-	
-	public interface EXT {
-		
-		interface BytesSrc extends ReadableByteChannel {
-			
-			interface Producer {
-				void subscribe(Consumer<BytesSrc> subscriber, Object token);
-				
-				Object token(Object token);
-				
-				Object token();
-			}
-		}
-		
-		interface BytesDst extends WritableByteChannel {}
+	public interface BytesSrc extends ReadableByteChannel {
+		Consumer<BytesSrc> subscribe_on_new_bytes_to_transmit_arrive( Consumer<BytesSrc> subscriber ); //Subscribe to be
+		//notified when new
+		//bytes are
+		//available for
+		//transmission
 	}
 	
-	public interface INT {
-		interface BytesDst {
-			BytesDst put_bytes(Receiver src);
-			
-			interface Consumer {
-				BytesDst receiving(Receiver src, int id);
-				
-				void received(Receiver src, BytesDst dst);
-			}
-		}
-		
-		interface BytesSrc {
-			BytesSrc get_bytes(Transmitter dst);
-			
-			interface Producer {
-				BytesSrc sending(Transmitter dst);
-				
-				void sent(Transmitter dst, BytesSrc src);
-			}
-		}
+	/**
+	 write bytes
+	 ATTENTION! The data in the provided buffer "src" may change due to buffer reuse.
+	 */
+	public interface BytesDst extends WritableByteChannel {
 	}
 	
-	public static class Receiver extends AdHoc implements EXT.BytesDst, Context.Provider {
+	/**
+	 Represents a stage within a channel, defining a processing state that
+	 can transmit and receive packets. Each stage is uniquely identified and
+	 can have specific behaviors for packet transmission and reception.
+	 */
+	public static class Stage {
+		//Unique identifier for the stage.
+		public final int uid;
 		
-		public AdHoc.INT.BytesDst.Consumer int_dst;
+		//Name of the stage.
+		public final String name;
+		
+		//Timeout duration for the stage. If not set, the stage can remain indefinitely.
+		public final Duration timeout;
+		
+		//Constructor to initialize the stage with its properties.
+		public Stage( int uid, String name, Duration timeout ) {
+			this.uid     = uid;
+			this.name    = name;
+			this.timeout = timeout;
+		}
+		
+		//Function to handle actions when transmitting packets. Defaults to ERROR stage if not specified.
+		public Stage on_transmitting( int id ) { return ERROR; }
+		
+		//Function to handle actions when receiving packets. Defaults to ERROR stage if not specified.
+		public Stage on_receiving( int id ) { return ERROR; }
+		
+		//Override toString method to return the stage name.
+		@Override
+		public String toString() { return name; }
+		
+		//Predefined EXIT stage to drop the connection after receiving the packet.
+		public static final Stage EXIT = new Stage( 0xFFFF, "Exit", Duration.ofHours( 0xFFFF ) );
+		
+		//Predefined ERROR stage to handle errors.
+		public static final Stage ERROR = new Stage( 0xFFFF, "Error", Duration.ofHours( 0xFFFF ) );
+	}
+	
+	public static abstract class Receiver extends Context.Receiver implements AdHoc.BytesDst {
+		
+		public volatile      EventsHandler                                        handler;
+		private static final AtomicReferenceFieldUpdater<Receiver, EventsHandler> exchange = AtomicReferenceFieldUpdater.newUpdater( Receiver.class, EventsHandler.class, "handler" );
+		
+		public EventsHandler exchange( EventsHandler dst ) { return exchange.getAndSet( this, dst ); }
 		
 		private final int id_bytes;
-		public Receiver(AdHoc.INT.BytesDst.Consumer int_dst, int id_bytes) {
+		
+		public Receiver( EventsHandler handler, int id_bytes ) {
 			
-			this.int_dst = int_dst;
-			bytes_left   = this.id_bytes = id_bytes;
+			this.handler = handler;
+			bytes_left   = bytes_max = this.id_bytes = id_bytes;
 		}
 		
+		public static OnError.Handler error_handler = OnError.Handler.DEFAULT;
 		
-		public static class Framing implements EXT.BytesDst {
-			@Override public boolean isOpen() {return dst.isOpen();}
-			@Override public void close()     {dst.close();}
-			public Receiver dst;
-			public Framing(Receiver dst) {(this.dst = dst).pack_by_pack_mode = true;}
+		public @interface OnError {
+			int FFFF_ERROR           = 0,
+					CRC_ERROR        = 1,
+					BYTES_DISTORTION = 3,
+					OVERFLOW         = 4,
+					INVALID_ID       = 5;
+			
+			interface Handler {
+				Handler DEFAULT = new Handler() { };
+				
+				default void error( AdHoc.BytesSrc src, int error, Throwable ex ) {
+					switch( error )
+					{
+						case OVERFLOW:
+							System.out.println( "OVERFLOW src:\n" + src + " at:\n" + (ex == null ? "" : StackTracePrinter.ONE.stackTrace( ex )) );
+					}
+				}
+				
+				default void error( AdHoc.BytesDst dst, int error, Throwable ex ) {
+					switch( error )
+					{
+						case FFFF_ERROR:
+							System.out.println( "FFFF_ERROR dst:\n" + dst + " at:\n" + (ex == null ? "" : StackTracePrinter.ONE.stackTrace( ex )) );
+						case CRC_ERROR:
+							System.out.println( "CRC_ERROR dst:\n" + dst + " at:\n" + (ex == null ? "" : StackTracePrinter.ONE.stackTrace( ex )) );
+						case BYTES_DISTORTION:
+							System.out.println( "BYTES_DISTORTION dst:\n" + dst + " at:\n" + (ex == null ? "" : StackTracePrinter.ONE.stackTrace( ex )) );
+						case OVERFLOW:
+							System.out.println( "OVERFLOW dst:\n" + dst + " at:\n" + (ex == null ? "" : StackTracePrinter.ONE.stackTrace( ex )) );
+						case INVALID_ID:
+							System.out.println( "INVALID_ID dst:\n" + dst + " at:\n" + (ex == null ? "" : StackTracePrinter.ONE.stackTrace( ex )) );
+					}
+				}
+			}
+		}
+		
+		public interface EventsHandler {
+			default void on_receiving( Receiver src, BytesDst dst ) { }
+			
+			default void on_received( Receiver src, BytesDst dst )  { }
+		}
+		
+		public interface BytesDst {
+			boolean __put_bytes( Receiver src );
+			
+			int __id();
+		}
+		
+		public static class Framing implements AdHoc.BytesDst, EventsHandler {
+			public               Receiver                                            upper_layer;
+			public volatile      EventsHandler                                       handler;
+			private static final AtomicReferenceFieldUpdater<Framing, EventsHandler> exchange = AtomicReferenceFieldUpdater.newUpdater( Framing.class, EventsHandler.class, "handler" );
+			
+			public EventsHandler exchange( EventsHandler dst ) { return exchange.getAndSet( this, dst ); }
+			
+			public Framing( Receiver upper_layer )             { switch_to( upper_layer ); }
+			
+			public void switch_to( Receiver upper_layer ) {
+				reset();
+				
+				if( this.upper_layer != null )
+				{
+					this.upper_layer.reset();
+					upper_layer.exchange( handler ); //off hook
+				}
+				
+				handler = (this.upper_layer = upper_layer).exchange( this );
+			}
+			
+			private void error_reset( @OnError int error ) {
+				error_handler.error( this, error, null );
+				reset();
+			}
+			
+			@Override
+			public void close() {
+				reset();
+				upper_layer.close();
+			}
 			
 			private void reset() {
 				
-				bits  = 0;
-				shift = 0;
-				crc0  = 0;
-				crc1  = 0;
-				crc   = 0;
-				put   = 0;
-				BYTE  = 0;
+				bits                         = 0;
+				shift                        = 0;
+				crc0                         = 0;
+				crc1                         = 0;
+				crc2                         = 0;
+				crc3                         = 0;
+				dst_byte                     = 0;
+				raw                          = 0;
+				waiting_for_dispatching_pack = null;
 				
-				if (!FF)//not on next frame start position... switch to search next frame start position mode
+				if( !FF ) //not on next frame start position... switch to search next frame start
+					//position mode
 					state = State.SEEK_FF;
-				
-				dst.write(null);//fully cleanup
 			}
 			
-			@Override public int write(ByteBuffer src) {
-				if (src == null)
+			/**
+			 write bytes
+			 ATTENTION! The data in the provided buffer "src" may change due to buffer reuse.
+			 */
+			@Override
+			public int write( ByteBuffer src ) throws IOException {
+				if( src == null )
 				{
 					reset();
 					return -1;
 				}
-				int remaining = src.remaining();
-				if (remaining < 1) return 0;
+				final int remaining = src.remaining();
+				if( remaining < 1 )
+					return 0;
 				final int limit = src.limit();
-				put = 0;
-
-
+				dst_byte = 0;
 init:
-				switch (state)
+				switch( state )
 				{
-					case State.SEEK_FF://bytes distortion was detected, skip bytes until FF sync mark
-						while (src.hasRemaining())
-							if (src.get() == (byte) 0xFF)
+					case State.SEEK_FF: //bytes distortion was detected, skip bytes until FF sync mark
+						while( src.hasRemaining() )
+							if( src.get() == (byte) 0xFF )
 							{
 								state = State.NORMAL;
-								if (FF) error_handler.error(Error.FFFF_ERROR);
+								if( FF )
+									error_handler.error( this, OnError.FFFF_ERROR, null );
 								FF = true;
-								if (src.hasRemaining()) break init;
+								if( src.hasRemaining() )
+									break init;
 								
 								return remaining;
 							}
-							else FF = false;
+							else
+								FF = false;
 						return remaining;
 					
 					case State.Ox7F:
 						
-						if (FF = (BYTE = src.get() & 0xFF) == 0xFF)//FF here is an error
+						if( FF = (raw = src.get() & 0xFF) == 0xFF ) //FF here is an error
 						{
-							reset();
+							error_reset( OnError.BYTES_DISTORTION );
 							break init;
 						}
 						
-						bits |= ((BYTE & 1) << 7 | 0x7F) << shift;
-						put(src, 0);
-						write(src, 1, State.NORMAL);
-						src.position(1).limit(limit);
-					
+						bits |= ((raw & 1) << 7 | 0x7F) << shift;
+						put( src, 0 );
+						
+						write( src, 1, State.NORMAL );
+						src.position( 1 ).limit( limit );
 					case State.Ox7F_:
 						
-						while (BYTE == 0x7F)
+						while( raw == 0x7F )
 						{
-							if (!src.hasRemaining())
+							if( !src.hasRemaining() )
 							{
-								write(src, put, State.Ox7F_);
+								write( src, dst_byte, State.Ox7F_ );
 								return remaining;
 							}
 							
-							if (FF = (BYTE = src.get() & 0xFF) == 0xFF)//FF here is an error
+							if( FF = (raw = src.get() & 0xFF) == 0xFF ) //FF here is an error
 							{
-								reset();
+								error_reset( OnError.BYTES_DISTORTION );
 								break init;
 							}
 							
-							bits |= (BYTE << 6 | 0x3F) << shift;
-							if ((shift += 7) < 8) continue;
+							bits |= (raw << 6 | 0x3F) << shift;
+							if( (shift += 7) < 8 )
+								continue;
 							shift -= 8;
 							
-							put(src, put++);
+							put( src, dst_byte++ );
 						}
 						
-						
-						bits |= BYTE >> 1 << shift;
-						if ((shift += 7) < 8) break;
+						bits |= raw >> 1 << shift;
+						if( (shift += 7) < 8 )
+							break;
 						
 						shift -= 8;
 						
-						if (src.position() == put)
+						if( src.position() == dst_byte )
 						{
-							write(src, put, State.NORMAL);
-							src.position(put).limit(limit);
-							put = 0;
+							write( src, dst_byte, State.NORMAL );
+							src.position( dst_byte ).limit( limit );
+							dst_byte = 0;
 						}
-						put(src, put++);
+						put( src, dst_byte++ );
 						
 						state = State.NORMAL;
 				}
 				
-				while (src.hasRemaining())
+				while( src.hasRemaining() )
 				{
-					if ((BYTE = src.get() & 0xFF) == 0x7F)
+					if( (raw = src.get() & 0xFF) == 0x7F )
 					{
-						if (!src.hasRemaining())
+						FF = false;
+						if( !src.hasRemaining() )
 						{
-							write(src, put, State.Ox7F);
+							write( src, dst_byte, State.Ox7F );
 							return remaining;
 						}
 						
-						if (FF = (BYTE = src.get() & 0xFF) == 0xFF)//FF here is an error
+						if( FF = (raw = src.get() & 0xFF) == 0xFF ) //FF here is an error
 						{
-							reset();
+							error_reset( OnError.BYTES_DISTORTION );
 							continue;
 						}
 						
-						bits |= ((BYTE & 1) << 7 | 0x7F) << shift;
+						bits |= ((raw & 1) << 7 | 0x7F) << shift;
 						
-						put(src, put++);
+						put( src, dst_byte++ );
 						
-						while (BYTE == 0x7F)
+						while( raw == 0x7F )
 						{
-							if (!src.hasRemaining())
+							if( !src.hasRemaining() )
 							{
-								write(src, put, State.Ox7F_);
+								write( src, dst_byte, State.Ox7F_ );
 								return remaining;
 							}
 							
-							if (FF = (BYTE = src.get() & 0xFF) == 0xFF)//FF here is an error
+							if( FF = (raw = src.get() & 0xFF) == 0xFF ) //FF here is an error
 							{
-								reset();
+								error_reset( OnError.BYTES_DISTORTION );
 								continue;
 							}
 							
-							bits |= ((BYTE & 1) << 6 | 0x3F) << shift;
-							if ((shift += 7) < 8) continue;
+							bits |= ((raw & 1) << 6 | 0x3F) << shift;
+							if( (shift += 7) < 8 )
+								continue;
 							
 							shift -= 8;
 							
-							put(src, put++);
+							put( src, dst_byte++ );
 						}
 						
-						bits |= BYTE >> 1 << shift;
-						if ((shift += 7) < 8) continue;
+						bits |= raw >> 1 << shift;
+						if( (shift += 7) < 8 )
+							continue;
 						
 						shift -= 8;
 					}
-					else if (BYTE == 0xFF)  //starting new  frame mark byte
+					else if( raw == 0xFF ) //starting new frame mark byte
 					{
-						if (FF)
+						if( FF )
 						{
-							error_handler.error(Error.FFFF_ERROR);
+							error_handler.error( this, OnError.FFFF_ERROR, null );
 							continue;
 						}
 						
 						FF = true;
-						final int fix = src.position();//store position
-						write(src, put, State.NORMAL);
-						src.limit(limit).position(fix);//restore position
+						if( state == State.SEEK_FF ) //can happence after any call of put (src, dec_position++) that can
+						//call >>> checkCrcThenDispatch >>> reset () so cleanup
+						{
+							reset();
+							state = State.NORMAL;
+						}
+						else
+						{
+							final int fix = src.position(); //store position
+							
+							write( src, dst_byte, State.NORMAL );
+							src.limit( limit ).position( fix ); //restore position
+						}
 						
 						continue;
 					}
-					else bits |= BYTE << shift;
+					else
+						bits |= raw << shift;
 					
 					FF = false;
-					put(src, put++);
+					put( src, dst_byte++ );
 				}
-				write(src, put, State.NORMAL);
+				write( src, dst_byte, State.NORMAL );
 				
 				return remaining;
 			}
 			
-			
-			private void write(ByteBuffer src, int limit, int state_if_ok) {
-				state = state_if_ok;
-				if (limit == 0) return;//no decoded bytes
+			private void put( ByteBuffer dst, int index ) {
 				
-				src.position(0).limit(limit);//positioning on the decoded bytes section
-				
-				dst.write(src);
-				
-				if (dst.mode == OK)//exit from dst.write(src) is not because there is not enough data
-				{
-					if (dst.slot != null && dst.slot.dst != null)//there is a `fully received packet`, waiting for CRC check and dispatching, if check is OK
-					{
-						//fully received packet here
-						int bytes_left = src.remaining();
-						if (bytes_left == CRC_LEN_BYTES)
-						{
-							dst.u4 = src.getChar();//received CRC
-							CHECK_CRC_THEN_DISPATCH();
-							return;
-						}
-						
-						if (bytes_left < CRC_LEN_BYTES)//not enough bytes for crc
-						{
-							RECEIVING_CRC = true;//switch receiving crc mode
-							
-							//prepare variables
-							dst.u4         = 0;//received CRC
-							dst.bytes_left = CRC_LEN_BYTES - 1;
-							
-							for (; 0 < bytes_left; bytes_left--, dst.bytes_left--)//collect already available crc bytes
-							     dst.u4 |= (src.get() & 0xFF) << bytes_left * 8;
-							return;
-						}
-						
-						// packet received but CRC_LEN_BYTES < src.remaining() (bytes left more than CRC_LEN_BYTES)  - this is not normal
-					}
-					
-					//consumed bytes does not produce packet. this is error
-					error_handler.error(Error.BYTES_DISTORTION);//error notification
-					reset();
-				}
-				else if (FF)//not enough bytes to complete the current packet but already next pack frame detected. error
-				{
-					error_handler.error(Error.BYTES_DISTORTION);
-					reset();
-				}
-			}
-			private void put(ByteBuffer dst, int put) {
-								
-				crc  = crc1; //shift crc
+				crc3 = crc2; //shift crc history
+				crc2 = crc1;
 				crc1 = crc0;
 				
-				if (RECEIVING_CRC)
-				{
-					this.dst.u4 |= (bits & 0xFF) << (this.dst.bytes_left * 8);
-					if ((this.dst.bytes_left -= 1) == -1) CHECK_CRC_THEN_DISPATCH();
-				}
-				else
-				{
-					crc0 = crc16(bits, crc1);
-					dst.put(put, (byte) bits);
-				}
+				crc0 = crc16( bits, crc1 );
+				dst.put( index, (byte) bits );
 				
 				bits >>= 8;
-				
 			}
 			
-			boolean RECEIVING_CRC = false;
+			@Override
+			public void on_receiving( Receiver src, BytesDst dst ) { handler.on_receiving( src, dst ); }
 			
-			void CHECK_CRC_THEN_DISPATCH() {
-				RECEIVING_CRC = false;
-				if (crc == dst.u4) dst.int_dst.received(dst, dst.slot.dst);//dispatching
-				else error_handler.error(Error.CRC_ERROR);//bad CRC
+			@Override
+			public void on_received( Receiver src, BytesDst pack ) {
+				pack_crc                     = 0;
+				pack_crc_byte                = CRC_LEN_BYTES - 1;
+				waiting_for_dispatching_pack = pack;
+				dispatch_on_0                = false;
+				
+				while( src.buffer.hasRemaining() && waiting_for_dispatching_pack != null )
+					getting_crc( src.buffer.get() & 0xFF );
+			}
+			
+			private void write( ByteBuffer src, int limit, int state_if_ok ) throws IOException {
+				state = state_if_ok;
+				if( limit == 0 )
+					return; //no decoded bytes
+				
+				src.position( 0 ).limit( limit ); //positioning on the decoded bytes section
+				
+				while( waiting_for_dispatching_pack != null )
+				{
+					getting_crc( src.get() & 0xFF );
+					if( !src.hasRemaining() )
+						return;
+				}
+				
+				upper_layer.write( src );
+				if( upper_layer.mode == OK || !FF )
+					return; //not enough bytes to complete the current packet but already next pack frame
+				//detected. error
+				error_reset( OnError.BYTES_DISTORTION );
+			}
+			
+			private BytesDst waiting_for_dispatching_pack;
+			private boolean  dispatch_on_0;
+			
+			private void getting_crc( int crc_byte ) {
+				
+				if( dispatch_on_0 )
+				{
+					if( crc_byte == 0 )
+						handler.on_received( upper_layer, waiting_for_dispatching_pack ); //dispatching
+					else
+						error_handler.error( this, OnError.CRC_ERROR, null ); //bad CRC
+					reset();
+					return;
+				}
+				
+				pack_crc |= crc_byte << pack_crc_byte * 8;
+				pack_crc_byte--;
+				if( -1 < pack_crc_byte )
+					return; //need more
+				
+				if( crc2 == pack_crc )
+					handler.on_received( upper_layer, waiting_for_dispatching_pack ); //pass dispatching
+				else if( crc16( pack_crc >> 8, crc3 ) == crc2 )
+				{
+					dispatch_on_0 = true;
+					return;
+				}
+				else
+					error_handler.error( this, OnError.CRC_ERROR, null ); //bad CRC
 				reset();
 			}
 			
-			
-			public Error.Handler error_handler = Error.Handler.DEFAULT;
-			
-			public @interface Error {
-				int
-						FFFF_ERROR       = 0,
-						CRC_ERROR        = 1,
-						BYTES_DISTORTION = 3;
-				
-				interface Handler {
-					Handler DEFAULT = error -> {
-						switch (error)
-						{
-							case FFFF_ERROR:
-								System.err.println("====================FFFF_ERROR");
-								return;
-							case CRC_ERROR:
-								System.err.println("===================CRC_ERROR");
-								return;
-							case BYTES_DISTORTION:
-								System.err.println("===================BYTES_DISTORTION");
-								return;
-							
-						}
-					};
-					
-					void error(int error);
-				}
-			}
-			
-			
-			private int  bits  = 0;
-			private int  put   = 0;//place where put decoded
-			private int  shift = 0;
-			private char crc   = 0;
-			private char crc0  = 0;
-			private char crc1  = 0;
-			private int  BYTE  = 0;//fix fetched byte
-			
-			private boolean FF = false;
-			
-			private @State int state = State.SEEK_FF;
+			private        int     bits     = 0;
+			private        int     shift    = 0;
+			private        char    pack_crc = 0; //from packet crc
+			private        char    crc0     = 0;     //calculated crc history
+			private        char    crc1     = 0;
+			private        char    crc2     = 0;
+			private        char    crc3     = 0;
+			private        int     pack_crc_byte;
+			private        int     raw      = 0;      //fix fetched byte
+			private        int     dst_byte = 0; //place where put decoded
+			private        boolean FF       = false;
+			private @State int     state    = State.SEEK_FF;
 			
 			private @interface State {
-				int
-						NORMAL  = 0,
-						Ox7F    = 2,
-						Ox7F_   = 3,
-						SEEK_FF = 4;
+				int NORMAL      = 0,
+						Ox7F    = 1,
+						Ox7F_   = 2,
+						SEEK_FF = 3;
 			}
+			
+			@Override
+			public boolean isOpen() { return upper_layer.isOpen(); }
 		}
-
-
 //region Slot
 		
-		private static class Slot {
+		public static class Slot extends Context.Receiver.Slot {
 			
-			public int                state;
-			public AdHoc.INT.BytesDst dst;
-			
-			public int base_index;
-			public int base_index_max;
-			public int base_nulls;
+			public BytesDst dst;
 			
 			public int fields_nulls;
 			
-			public int index     = 1;
-			public int index_max = 1;
-			public int items_nulls;
+			@SuppressWarnings( "unchecked" )
+			public <DST extends BytesDst> DST get_bytes() { return (DST) next.dst; }
 			
-			public       Slot next;
-			public final Slot prev;
+			private       Slot next;
+			private final Slot prev;
 			
-			public Slot(Slot prev) {
+			public Slot( Receiver dst, Slot prev ) {
+				super( dst );
 				this.prev = prev;
-				if (prev != null) prev.next = this;
-			}
-			public ContextExt context;
-		}
-		
-		private Slot                slot;
-		private SoftReference<Slot> slot_ref = new SoftReference<>(new Slot(null));
-		
-		private void free_slot() {
-			if (slot.context != null)
-			{
-				context      = slot.context.prev;
-				slot.context = null;
-			}
-			slot = slot.prev;
-		}
-
-//endregion
-
-
-//region Context
-		
-		private static class ContextExt extends Context {
-			
-			AdHoc.INT.BytesDst key;
-			AdHoc.INT.BytesDst value;
-			
-			String key_string;
-			long   key_long;
-			public       ContextExt next;
-			public final ContextExt prev;
-			
-			public ContextExt(ContextExt prev) {
-				this.prev = prev;
-				if (prev != null) prev.next = this;
+				if( prev != null )
+					prev.next = this;
 			}
 		}
 		
-		private ContextExt                context;
-		private SoftReference<ContextExt> context_ref = new SoftReference<>(new ContextExt(null));
+		public boolean isOpen() { return slot != null; }
 		
-		
-		public Context context() {
-			
-			if (slot.context != null) return slot.context;
-			
-			if (context == null && (context = context_ref.get()) == null) context_ref = new SoftReference<>(context = new ContextExt(null));
-			else if (context.next == null) context = context.next = new ContextExt(context);
-			else context = context.next;
-			
-			return slot.context = context;
-		}
-
+		public  Slot                slot;
+		private SoftReference<Slot> slot_ref = new SoftReference<>( new Slot( this, null ) );
+		//Soft references are kept alive longer in the server virtual machine than in
+		//the client.
+		//
+		//The rate of clearing can be controlled with the command-line
+		//option -XX:SoftRefLRUPolicyMSPerMB=\<N\>, which specifies the number of
+		//milliseconds (ms) a soft reference will be kept alive (once it is no longer
+		//strongly reachable) for each megabyte of free space in the heap. The default
+		//value is 1000 ms per megabyte, which means that a soft reference will survive
+		//(after the last strong reference to the object has been collected) for 1
+		//second
+		//for each megabyte of free space in the heap. This is an approximate figure
+		//because soft references are cleared only during garbage collection, which may
+		//occur sporadically
 //endregion
 		
-		public AdHoc.INT.BytesDst output() {
-			AdHoc.INT.BytesDst dst = slot.next.dst;
-			slot.next.dst = null;
-			return dst;
-		}
-		
-		public AdHoc.INT.BytesDst key() {
-			AdHoc.INT.BytesDst key = slot.context.key;
-			slot.context.key = null;
-			return key;
-		}
-		
-		public AdHoc.INT.BytesDst key(AdHoc.INT.BytesDst key) {return slot.context.key = key;}
-		
-		public AdHoc.INT.BytesDst value() {
-			AdHoc.INT.BytesDst value = slot.context.value;
-			slot.context.value = null;
-			return value;
-		}
-		
-		public AdHoc.INT.BytesDst value(AdHoc.INT.BytesDst value) {return slot.context.value = value;}
-		
-		public void key(String key)                               {slot.context.key_string = key;}
-		
-		public String key_string() {
-			String key = slot.context.key_string;
-			slot.context.key_string = null;
-			return key;
-		}
-		public long key(long key)   {return slot.context.key_long = key;}
-		
-		public long key_long()      {return slot.context.key_long;}
-		
-		public void key(double key) {slot.context.key_long = Double.doubleToLongBits(key);}
-		
-		public double key_double()  {return Double.longBitsToDouble(slot.context.key_long);}
-		
-		public void key(float key)  {slot.context.key_long = Float.floatToIntBits(key);}
-		
-		public float key_float()    {return Float.intBitsToFloat((int) slot.context.key_long);}
-		
-		public boolean get_info(int the_case) {
-			if (0 < buffer.remaining())
-			{
-				context();
-				slot.context.key_long = (long) getU() << 32;
-				return true;
-			}
-			retry_at(the_case);
-			return false;
-		}
-		
-		public boolean hasNullKey() {return (key_long() >> 39 & 1) == 1;}
-		
-		public boolean hasNullKey(int key_val_case, int end_case) {
-			if (hasNullKey()) return true;
-			state(index_max() == 0 ? end_case : key_val_case);
-			
-			return false;
-		}
-		
-		public boolean hasNullKey(int null_values_case, int key_val_case, int next_field_case) {
-			boolean has = hasNullKey();
-			if (has && nullKeyHasValue()) return true;//not jump. step to send value of key == null
-			
-			//if key == null does not exists or it's value == null
-			//no need to receive value,  so can calculate next jump
-			state(0 < index_max() ? null_values_case : //jump to send keys which value == null
-			      0 < index_max((int) key_long()) ? key_val_case :// jump to send KV
-			      next_field_case //jump out
-			     );
-			
-			return has;
-		}
-		
-		public boolean nullKeyHasValue()              {return (slot.context.key_long >> 38 & 1) == 1;}
-		
-		public boolean get_items_count(int next_case) {return get_len((int) (slot.context.key_long >> 32 & 7), next_case);}
-		
-		public boolean null_values_count(int next_case) {
-			slot.context.key_long |= index_max();//preserve total items count
-			return get_len((int) (slot.context.key_long >> 35 & 7), next_case);
-		}
-		
-		public int items_count() {return (int) key_long() + index_max() + (hasNullKey() ? 1 : 0);}
-		
-		public boolean no_null_values(int key_val_case, int end_case) {
-			if (0 < index_max()) return false; //no keys which value == null
-			
-			state(0 < index_max((int) key_long()) ? key_val_case : end_case);// KV
-			return true;
-		}
-		
-		public boolean no_key_val(int end_case) {
-			
-			if (0 < index_max((int) key_long())) return false;
-			state(end_case);
-			return true;
-		}
-		
-		
-		public int state()           {return slot.state;}
-		
-		public void state(int value) {slot.state = value;}
-		
-		
-		public int index()           {return slot.index;}
-		
-		public int index(int value)  {return slot.index = value;}
-		
-		public int index_max()       {return slot.index_max;}
-		
-		public int index_max(int len) {
-			slot.index = 0;
-			return slot.index_max = len;
-		}
-		
-		public boolean index_max_zero(int on_zero_case) {
-			if (0 < slot.index_max) return false;
-			state(on_zero_case);
-			return true;
-		}
-		
-		public int base_index()          {return slot.base_index;}
-		
-		public int base_index(int value) {return slot.base_index = value;}
-		
-		public int base_index_max()      {return slot.base_index_max;}
-		
-		public int base_index_max(int base_len) {
-			slot.base_index = 0;
-			return slot.base_index_max = base_len;
-		}
-		
-		public boolean next_index(int ok_case) {
-			if (++slot.index < slot.index_max)
-			{
-				state(ok_case);
-				return true;
-			}
-			return false;
-		}
-		
-		public boolean next_index()      {return ++slot.index < slot.index_max;}
-		
-		public boolean next_base_index() {return ++slot.base_index < slot.base_index_max;}
-		
-		public boolean null_at_index()   {return (nulls() & 1 << (index() & 7)) == 0;}
-		
-		public int nulls()               {return slot.items_nulls;}
-		
-		public void nulls(int nulls, int index) {
-			
-			slot.index       = index + trailingZeros(nulls);
-			slot.items_nulls = nulls;
-		}
-		
-		
-		public boolean null_at_base_index() {return (base_nulls() & 1 << (base_index() & 7)) == 0;}
-		
-		public int base_nulls()             {return slot.base_nulls;}
-		
-		public void base_nulls(int nulls, int base_index) {
-			
-			slot.base_index = base_index + trailingZeros(nulls);
-			slot.base_nulls = nulls;
-			
-		}
-		
-		public boolean find_exist(int index) {
-			int nulls = buffer.get() & 0xFF;
-			if (nulls == 0) return false;
-			slot.index       = index + trailingZeros(nulls);
-			slot.items_nulls = nulls;
-			return true;
-		}
-		
-		public boolean find_base_exist(int base_index) {
-			int nulls = buffer.get() & 0xFF;
-			if (nulls == 0) return false;
-			slot.base_index = base_index + trailingZeros(nulls);
-			slot.base_nulls = nulls;
-			return true;
-		}
-		
-		public boolean get_fields_nulls(int this_case) {
-			if (buffer.hasRemaining())
+		public boolean get_fields_nulls( int this_case ) {
+			if( buffer.hasRemaining() )
 			{
 				slot.fields_nulls = buffer.get() & 0xFF;
 				return true;
 			}
 			
 			slot.state = this_case;
-			mode       = DONE;
+			mode       = RETRY;
 			return false;
 		}
 		
-		public boolean is_null(int field, int next_field_case) {
-			if ((slot.fields_nulls & field) == 0)
-			{
-				state(next_field_case);
-				return true;
-			}
-			return false;
-		}
-		
-		public boolean get_len(int bytes, int next_case) {
-			if (bytes == 0)
-			{
-				index_max(0);
-				return true;
-			}
-			
-			if (buffer.remaining() < bytes)
-			{
-				retry_get4(bytes, next_case);
-				mode = LEN;
+		public boolean is_null( int field, int if_null_case ) {
+			if( (slot.fields_nulls & field) != 0 )
 				return false;
-			}
-			
-			index_max(get4(bytes));
+			slot.state = if_null_case;
 			return true;
 		}
 		
-		public boolean get_base_len(int bytes, int next_case) {
-			if (buffer.remaining() < bytes)
-			{
-				retry_get4(bytes, next_case);
-				mode = BASE_LEN;
+		public boolean byte_nulls( int if_null_case ) {
+			int null_bit = get_byte();
+			if( null_bit == 0 )
 				return false;
-			}
-			
-			base_index_max(get4(bytes));
+			u8         = u8_ |= 1L << null_bit;
+			slot.state = if_null_case;
 			return true;
 		}
 		
+		public boolean byte_nulls( long null_value, int if_null_case ) {
+			int null_bit = get_byte();
+			if( null_bit == 0 )
+				return false;
+			
+			u8         = u8_ |= null_value;
+			slot.state = if_null_case;
+			return true;
+		}
 		
-		public boolean idle() {return slot == null;}
+		public boolean byte_nulls( int bit, long null_value, int if_null_case ) {
+			int null_bit = get_byte();
+			if( null_bit == 0 )
+				return false;
+			
+			u8         = u8_ |= null_bit == bit ? null_value : 1L << null_bit;
+			slot.state = if_null_case;
+			return true;
+		}
 		
+		public boolean bit_null( int if_null_case ) {
+			if( get_bits() == 0 )
+				return false;
+			slot.state = if_null_case;
+			return true;
+		}
+		
+		public boolean idle() { return slot == null; }
 		
 		boolean not_get4() {
-			if (buffer.remaining() < bytes_left)
+			if( buffer.remaining() < bytes_left )
 			{
 				int r = buffer.remaining();
-				u4 = u4 << r * 8 | get4(r);
+				u4 |= get4( r ) << (bytes_max - bytes_left) * 8;
 				bytes_left -= r;
 				return true;
 			}
 			
-			u4 = u4 << bytes_left * 8 | get4(bytes_left);
+			u4 |= get4( bytes_left ) << (bytes_max - bytes_left) * 8;
 			return false;
 		}
-		// if src == null - clear and reset
-		public int write(ByteBuffer src) {
+		
+		public abstract BytesDst allocate( int id ); //throws Exception if wrong id
+		
+		public abstract BytesDst receiving( int id ); //throws Exception if wrong id
+		
+		@Override
+		public void close() { reset(); }
+		
+		protected void reset() {
+			if( slot == null )
+				return;
 			
-			if (src == null)
-			{
-				buffer = null;
-				if (slot == null) return 0;
-				mode            = OK;
-				bytes_left      = id_bytes;
-				u4              = 0;
-				u8              = 0;
-				internal_string = null;
-				slot.dst        = null;
-				slot.state      = 0;
-				
-				while (slot != null)
-				{
-					slot.dst = null;
-					free_slot();
-				}
-				
-				return 0;
-			}
+			for( Slot s = slot; s != null; s = s.next )
+			     s.dst = null;
+			slot = null;
+			
+			buffer = null;
+			chs    = null;
+			
+			mode       = OK;
+			bytes_left = bytes_max = id_bytes;
+			u4         = 0;
+			//dont u8 = 0; preserve probably a value pack data for framing layer.
+			//dont str = null; preserve probably a value pack data for framing layer.
+		}
+		
+		/**
+		 write bytes
+		 if src == null - clear and reset
+		 ATTENTION! The data in the provided buffer "src" may change due to buffer reuse.
+		 */
+		public int write( ByteBuffer src ) {
 			
 			final int remaining = src.remaining();
-			
-			buffer = src;
 write:
-			for (; ; )
 			{
-				if (slot == null || slot.dst == null)
+				for( buffer = src; src.hasRemaining(); )
 				{
-					if (not_get4())
-					{
-						if (slot != null) free_slot();//remove hardlinks
-						break;
-					}
-					
-					final int id = u4;
-					bytes_left = id_bytes;
-					u4         = 0;
-					
-					if ((slot = slot_ref.get()) == null) slot_ref = new SoftReference<>(slot = new Slot(null));
-					
-					if ((slot.dst = int_dst.receiving(this, id)) == null)
-					{
-						slot = null;
-						break;
-					}
-					u8         = 0;
-					slot.state = 0;
-				}
-				else switch (mode)
-				{
-					case VAL8:
-						if (buffer.remaining() < bytes_left)
+					if( slot == null || slot.dst == null )
+						try
 						{
-							int r = buffer.remaining();
-							u8 = u8 << r * 8 | get8(r);
-							bytes_left -= r;
-							break write;
+							if( not_get4() )
+								break write;
+							
+							final BytesDst dst = receiving( u4 ); //throws Exception if wrong id
+							if( (slot = slot_ref.get()) == null )
+								slot_ref = new SoftReference<>( slot = new Slot( this, null ) );
+							
+							slot.dst   = dst;
+							bytes_left = bytes_max = id_bytes;
+							u4         = 0;
+							u8         = 0;
+							u8_        = 0;
+							slot.state = 0;
+							handler.on_receiving( this, dst );
+							if( slot == null )
+								return -1; //receiving event handler has reset this
+						} catch( Exception ex )
+						{
+							reset();
+							error_handler.error( this, OnError.INVALID_ID, ex );
+							break;
 						}
-						
-						u8 = u8 << bytes_left * 8 | get8(bytes_left);
-						
-						break;
-					case VAL4:
-						if (not_get4()) break write;
-						break;
-					case LEN:
-						if (not_get4()) break write;
-						
-						index_max(u4);
-						break;
-					case VARINT:
-						if (buffer.hasRemaining() && retry_get_varint(state())) break;
-						break write;
-					case BASE_LEN:
-						if (not_get4()) break write;
-						
-						base_index_max(u4);
-						break;
-					case STR:
-						if (!string()) break write;
-						break;
-					case DONE:
-						break;
+					else
+						switch( mode )
+						{
+							case INT1:
+								if( not_get4() )
+									break write;
+								u8 = (byte) u4;
+								break;
+							case INT2:
+								if( not_get4() )
+									break write;
+								u8 = (short) u4;
+								break;
+							case INT4:
+								if( not_get4() )
+									break write;
+								u8 = u4;
+								break;
+							case VAL4:
+								if( not_get4() )
+									break write;
+								break;
+							case VAL8:
+								if( buffer.remaining() < bytes_left )
+								{
+									int r = buffer.remaining();
+									u8 |= get8( r ) << (bytes_max - bytes_left) * 8;
+									bytes_left -= r;
+									break write;
+								}
+								
+								u8 |= get8( bytes_left ) << (bytes_max - bytes_left) * 8;
+								
+								break;
+							case LEN0:
+								if( not_get4() )
+									break write;
+								slot.check_len0( u4 );
+								break;
+							case LEN1:
+								if( not_get4() )
+									break write;
+								slot.check_len1( u4 );
+								break;
+							case LEN2:
+								if( not_get4() )
+									break write;
+								slot.check_len2( u4 );
+								break;
+							case VARINT:
+								if( varint() )
+									break;
+								break write;
+							
+							case STR:
+								if( !varint() )
+									break write;
+								
+								if( u8_ == -1 )
+									if( check_length_and_getting_string() )
+										break;
+									else
+										break write; //was reading string length
+								
+								chs[u4++] = (char) u8;
+								if( getting_string() )
+									break;
+								break write;
+						}
+					
+					mode = OK;
+					
+					for( ; ; )
+						if( !this.slot.dst.__put_bytes( this ) )
+							break write; //data over
+						else
+						{
+							
+							if( slot.prev == null )
+								break;
+							slot = slot.prev;
+						}
+					
+					handler.on_received( this, slot.dst ); //dispatching
+					
+					u4         = 0;
+					bytes_left = bytes_max = id_bytes;
+					if( slot == null )
+						return -1;   //received event handler has reset this
+					slot.dst = null; //ready to read next packet data
 				}
 				
-				mode = OK;
-				
-				for (AdHoc.INT.BytesDst dst; ; )
-					if ((dst = slot.dst.put_bytes(this)) == null)
-					{
-						if (mode < OK) break write;  //provided, received data ended
-						if (slot.prev == null) break; //it was the root, all received. now dispatching
-						
-						//slot.dst = null; //back from depth. do not clean up, can be used
-						
-						free_slot();
-					}
-					else //deepening into the hierarchy
-					{
-						slot       = slot.next == null ? slot.next = new Slot(slot) : slot.next;
-						slot.dst   = dst;
-						slot.state = 0;
-					}
-				
-				bytes_left = id_bytes;// !!!!!!!!!!!!!
-				u4         = 0;
-				slot.state = 0;
-				
-				if (pack_by_pack_mode) return remaining - src.remaining();//do not clean up, do not dispatch, return length of processed bytes
-				
-				int_dst.received(this, slot.dst);//dispatching
-				slot.dst = null; //ready to read next packet data
-				
-			}//write: loop
+				if( slot != null && slot.dst == null )
+					reset();
+			} //write
 			
 			buffer = null;
 			
 			return remaining;
 		}
 		
-		
-		public void retry_at(int the_case) {
-			slot.state = the_case;
-			mode       = DONE;
+		public <DST extends BytesDst> DST get_bytes( DST dst ) {
+			slot.state = 0;
+			dst.__put_bytes( this );
+			return dst;
 		}
 		
-		
-		public byte get() {return buffer.get();}
-		
-		public int getU() {return buffer.get() & 0xFF;}
-		
-		public boolean no_items_data(int retry_at_case, int no_items_case) {
-			for (int nulls; buffer.hasRemaining(); )
+		public <DST extends BytesDst> DST try_get_bytes( DST dst, int next_case ) {
+			
+			final Slot s = slot;
+			
+			(slot = s.next == null ? s.next = new Slot( this, s ) : s.next).dst = dst;
+			this.slot.state                                                     = 0;
+			u8_                                                                 = 0;
+			if( dst.__put_bytes( this ) )
 			{
-				if ((nulls = buffer.get() & 0xFF) != 0)
-				{
-					slot.index += trailingZeros(slot.items_nulls = nulls);
-					return false;
-				}
-				if (slot.index_max <= (slot.index += 8))
-				{
-					state(no_items_case);
-					return false;
-				}
+				
+				slot = s;
+				return dst;
 			}
-			retry_at(retry_at_case);
+			
+			s.state = next_case;
+			
+			return null;
+		}
+		
+		public void retry_at( int the_case ) {
+			slot.state = the_case;
+			mode       = RETRY;
+		}
+		
+		public boolean has_bytes( int next_case ) {
+			if( buffer.hasRemaining() )
+				return true;
+			mode       = RETRY;
+			slot.state = next_case;
+			return false;
+		}
+		
+		public boolean has_1bytes( int get_case ) { return buffer.hasRemaining() || retry_get4( 1, get_case ); }
+		
+		public byte get_byte_()                   { return (byte) u4; }
+		
+		public byte get_byte()                    { return buffer.get(); }
+		
+		public char get_ubyte()                   { return (char) (buffer.get() & 0xFF); }
+		
+		public char get_ubyte_()                  { return (char) (u4 & 0xFF); }
+		
+		public boolean has_2bytes( int get_case ) { return 1 < buffer.remaining() || retry_get4( 2, get_case ); }
+		
+		public short get_short_()                 { return (short) u4; }
+		
+		public short get_short()                  { return buffer.getShort(); }
+		
+		public char get_char()                    { return buffer.getChar(); }
+		
+		public char get_char_()                   { return (char) u4; }
+		
+		public boolean has_4bytes( int get_case ) { return 3 < buffer.remaining() || retry_get4( 4, get_case ); }
+		
+		public int get_int()                      { return buffer.getInt(); }
+		
+		public int get_int_()                     { return u4; }
+		
+		public long get_uint()                    { return buffer.getInt() & 0xFFFFFFFFL; }
+		
+		public long get_uint_()                   { return u4 & 0xFFFFFFFFL; }
+		
+		public boolean has_8bytes( int get_case ) { return 7 < buffer.remaining() || retry_get8( 8, get_case ); }
+		
+		public long get_long()                    { return buffer.getLong(); }
+		
+		public long get_long_()                   { return u8; }
+		
+		public double get_double()                { return buffer.getDouble(); }
+		
+		public double get_double_()               { return Double.longBitsToDouble( u8 ); }
+		
+		public float get_float()                  { return buffer.getFloat(); }
+		
+		public float get_float_()                 { return Float.intBitsToFloat( u4 ); }
+		
+		public boolean get_byte_u8( int get_case ) {
+			if( buffer.hasRemaining() )
+			{
+				u8 = buffer.get();
+				return true;
+			}
+			retry_get4( 1, get_case );
+			mode = INT1;
+			return false;
+		}
+		
+		public boolean get_ubyte_u8( int get_case ) {
+			if( buffer.remaining() == 0 )
+				return retry_get8( 1, get_case );
+			u8 = buffer.get() & 0xFF;
 			return true;
 		}
 		
-		public boolean no_index(int on_fail_case, int on_fail_fix_index) {
-			if (buffer.hasRemaining()) return false;
-			retry_at(on_fail_case);
-			index(on_fail_fix_index);
+		public boolean get_short_u8( int get_case ) {
+			if( 1 < buffer.remaining() )
+			{
+				u8 = buffer.getShort();
+				return true;
+			}
+			retry_get4( 2, get_case );
+			mode = INT2;
+			return false;
+		}
+		
+		public boolean get_char_u8( int get_case ) {
+			if( buffer.remaining() < 2 )
+				return retry_get8( 2, get_case );
+			u8 = buffer.getShort() & 0xFFFF;
 			return true;
 		}
 		
-		public boolean no_base_index(int on_fail_case, int fix_base_index_on_fail) {
-			if (buffer.hasRemaining()) return false;
-			retry_at(on_fail_case);
-			base_index(fix_base_index_on_fail);
+		public boolean get_int_u8( int get_case ) {
+			if( 3 < buffer.remaining() )
+			{
+				u8 = buffer.getInt();
+				return true;
+			}
+			retry_get4( 4, get_case );
+			mode = INT4;
+			return false;
+		}
+		
+		public boolean get_uint_u8( int get_case ) {
+			if( buffer.remaining() < 4 )
+				return retry_get8( 4, get_case );
+			u8 = buffer.getInt() & 0xFFFFFFFFL;
 			return true;
 		}
 		
-		public int remaining()                 {return buffer.remaining();}
+		public boolean get_long_u8( int get_case ) {
+			if( buffer.remaining() < 8 )
+				return retry_get8( 8, get_case );
+			u8 = buffer.getLong();
+			return true;
+		}
+//#region 8
 		
-		public int position()                  {return buffer.position();}
-		
-		public boolean try_get8(int next_case) {return try_get8(bytes_left, next_case);}
-		
-		public boolean try_get8(int bytes, int next_case) {
-			if (buffer.remaining() < bytes) return retry_get8(bytes, next_case);
-			u8 = get8(bytes);
+		public boolean try_get8( int bytes, int next_case ) {
+			if( buffer.remaining() < bytes )
+				return retry_get8( bytes, next_case );
+			u8 = get8( bytes );
 			return true;
 		}
 		
-		public boolean retry_get8(int bytes, int get8_case) {
-			bytes_left = bytes - buffer.remaining();
-			u8         = get8(buffer.remaining());
+		public boolean retry_get8( int bytes, int get8_case ) {
+			bytes_left = (bytes_max = bytes) - buffer.remaining();
+			u8         = get8( buffer.remaining() );
 			slot.state = get8_case;
 			mode       = VAL8;
 			return false;
 		}
 		
-		public long get8() {return u8;}
+		public long get8() { return u8; }
 		
-		public long get8(int byTes) {
-			long u8 = 0;
+		public long get8( int bytes ) {
 			
-			switch (byTes)
+			switch( bytes )
 			{
 				case 8:
-					u8 |= (buffer.get() & 0xFFL) << 56;
+					return buffer.getLong();
 				case 7:
-					u8 |= (buffer.get() & 0xFFL) << 48;
+					return buffer.getInt() & 0xFFFF_FFFFL |
+					       (buffer.getShort() & 0xFFFFL) << 32 |
+					       (buffer.get() & 0xFFL) << 48;
 				case 6:
-					u8 |= (buffer.get() & 0xFFL) << 40;
+					return buffer.getInt() & 0xFFFF_FFFFL |
+					       (buffer.getShort() & 0xFFFFL) << 32;
 				case 5:
-					u8 |= (buffer.get() & 0xFFL) << 32;
+					return buffer.getInt() & 0xFFFF_FFFFL |
+					       (buffer.get() & 0xFFL) << 32;
 				case 4:
-					u8 |= (buffer.get() & 0xFFL) << 24;
+					return buffer.getInt() & 0xFFFF_FFFFL;
 				case 3:
-					u8 |= (buffer.get() & 0xFFL) << 16;
+					return buffer.getShort() & 0xFFFFL |
+					       (buffer.get() & 0xFFL) << 16;
 				case 2:
-					u8 |= (buffer.get() & 0xFFL) << 8;
+					return buffer.getShort() & 0xFFFFL;
 				case 1:
-					u8 |= buffer.get() & 0xFFL;
+					return buffer.get() & 0xFFL;
+				case 0:
+					return 0;
 			}
-			return u8;
+			throw new RuntimeException( "Unexpected amount of bytes:" + bytes );
 		}
+//#endregion
+//#region 4
 		
-		public boolean try_get4(int next_case) {return try_get4(bytes_left, next_case);}
-		
-		public boolean try_get4(int bytes, int next_case) {
-			if (buffer.remaining() < bytes) return retry_get4(bytes, next_case);
-			u4 = get4(bytes);
+		public boolean try_get4( int bytes, int next_case ) {
+			if( buffer.remaining() < bytes )
+				return retry_get4( bytes, next_case );
+			u4 = get4( bytes );
 			return true;
 		}
 		
-		public boolean retry_get4(int bytes, int get4_case) {
-			bytes_left = bytes - buffer.remaining();
-			u4         = get4(buffer.remaining());
-			slot.state = get4_case;
+		public boolean retry_get4( int bytes, int get_case ) {
+			bytes_left = (bytes_max = bytes) - buffer.remaining();
+			u4         = get4( buffer.remaining() );
+			slot.state = get_case;
 			mode       = VAL4;
 			return false;
 		}
 		
-		public double get_double() {return buffer.getDouble();}
+		public int get4() { return u4; }
 		
-		public float get_float()   {return buffer.getFloat();}
-		
-		public double as_double()  {return Double.longBitsToDouble(u8);}
-		
-		public float as_float()    {return Float.intBitsToFloat(u4);}
-		
-		public int get4()          {return u4;}
-		
-		public int get4(int bytes) {
-			int u4 = 0;
-			switch (bytes)
+		public int get4( int bytes ) {
+			switch( bytes )
 			{
 				case 4:
-					u4 |= (buffer.get() & 0xFF) << 24;
+					return buffer.getInt();
 				case 3:
-					u4 |= (buffer.get() & 0xFF) << 16;
+					return buffer.getShort() & 0xFFFF |
+					       (buffer.get() & 0xFF) << 16;
 				case 2:
-					u4 |= (buffer.get() & 0xFF) << 8;
+					return buffer.getShort() & 0xFFFF;
 				case 1:
-					u4 |= buffer.get() & 0xFF;
+					return buffer.get() & 0xFF;
+				case 0:
+					return 0;
 			}
-			return u4;
+			throw new RuntimeException( "Unexpected amount of bytes:" + bytes );
 		}
-
+//#endregion
 //region bits
 		
-		public void init_bits() {//initialization receive bit
+		public void init_bits() { //initialization receive bit
 			bits = 0;
 			bit  = 8;
 		}
 		
-		public byte get_bits() {return (byte) u4;}
+		public byte get_bits() { return (byte) u4; }
 		
-		
-		public int get_bits(int len_bits) {
+		public int get_bits( int len_bits ) {
 			int ret;
-			if (bit + len_bits < 9)
+			if( bit + len_bits < 9 )
 			{
 				ret = bits >> bit & 0xFF >> 8 - len_bits;
 				bit += len_bits;
@@ -1071,1121 +1091,1653 @@ write:
 			return ret;
 		}
 		
-		public boolean try_get_bits(int len_bits, int this_case) {
-			if (bit + len_bits < 9)
+		public boolean try_get_bits( int len_bits, int this_case ) {
+			if( bit + len_bits < 9 )
 			{
 				u4 = bits >> bit & 0xFF >> 8 - len_bits;
 				bit += len_bits;
 			}
-			else if (buffer.hasRemaining())
+			else if( buffer.hasRemaining() )
 			{
 				u4  = (bits >> bit | (bits = buffer.get() & 0xFF) << 8 - bit) & 0xFF >> 8 - len_bits;
 				bit = bit + len_bits - 8;
 			}
 			else
 			{
-				retry_at(this_case);
+				retry_at( this_case );
 				return false;
 			}
 			return true;
 		}
-
 //endregion
+//region varint
 		
-		public short zig_zag2(long src) {return (short) (-(src & 1) ^ src >>> 1);}
+		public boolean try_get8( int next_case ) { return try_get8( bytes_left, next_case ); }
 		
-		public int zig_zag4(long src)   {return (int) (-(src & 1) ^ src >>> 1);}
+		public boolean try_get_varint_bits1( int bits, int this_case ) {
+			if( !try_get_bits( bits, this_case ) )
+				return false;
+			bytes_left = bytes_max = get_bits() + 1;
+			return true;
+		}
 		
-		public long zig_zag8(long src)  {return -(src & 1) ^ src >>> 1;}
+		public boolean try_get_varint_bits( int bits, int this_case ) {
+			if( !try_get_bits( bits, this_case ) )
+				return false;
+			bytes_left = bytes_max = get_bits();
+			return true;
+		}
 		
-		public boolean try_get_varint(int next_case) {
+		public boolean try_get_varint( int next_case ) {
 			u8         = 0;
 			bytes_left = 0;
 			
-			return retry_get_varint(next_case);
-		}
-		
-		private boolean retry_get_varint(int next_case) {
-			
-			while (buffer.hasRemaining())
-			{
-				byte b = buffer.get();
-				if (b < 0)
-				{
-					u8 |= (b & 0x7FL) << bytes_left;
-					bytes_left += 7;
-					continue;
-				}
-				
-				u8 |= (long) b << bytes_left;
+			if( varint() )
 				return true;
-			}
-			state(next_case);
-			mode = VARINT;
+			
+			slot.state = next_case;
+			mode       = VARINT;
 			return false;
 		}
 		
-		
-		//region temporary store received params
-		private SoftReference<byte[]> buff_ref = new SoftReference<>(null); //temporary buffer for the received string
-		private byte[]                buff     = null;
-		public void init_buff() {
-			if ((buff = buff_ref.get()) == null) buff = new byte[512];
-		}
-		
-		public void clean_buff() {buff = null;}
-		
-		public int get(int pos, int bytes) {
-			int u4 = 0;
-			switch (bytes)
-			{
-				case 4:
-					u4 |= (buff[pos + 3] & 0xFF) << 24;
-				case 3:
-					u4 |= (buff[pos + 2] & 0xFF) << 16;
-				case 2:
-					u4 |= (buff[pos + 1] & 0xFF) << 8;
-				case 1:
-					u4 |= buff[pos] & 0xFF;
-			}
-			return u4;
-		}
-		
-		public void put(int pos, int bytes) {
-			switch (bytes)
-			{
-				case 4:
-					buff[pos + 3] = (byte) (u4 >> 24 & 0xFF);
-				case 3:
-					buff[pos + 2] = (byte) (u4 >> 16 & 0xFF);
-				case 2:
-					buff[pos + 1] = (byte) (u4 >> 8 & 0xFF);
-				case 1:
-					buff[pos] = (byte) (u4 & 0xFF);
-			}
-		}
-
-//endregion
-		
-		//getting the result of an offline fill
-		public String get_string() {
-			String ret = internal_string;
-			internal_string = null;
-			return ret;
-		}
-		public boolean get_string(int get_string_case) {
+		private boolean varint() {
 			
-			if ((buff = buff_ref.get()) == null) buff = new byte[512];
-			internal_string = null;
-			bytes_left      = 0;
-			
-			if (string()) return true;
-			
-			slot.state = get_string_case;
-			mode       = STR; //lack of received bytes, switch to reading lines offline
-			return false;
-		}
-		
-		public boolean string() {
-			for (byte b; buffer.hasRemaining(); bytes_left++)
-				if ((b = buffer.get()) == (byte) 0xFF)
+			for( byte b; buffer.hasRemaining(); u8 |= (b & 0x7FL) << bytes_left, bytes_left += 7 )
+				if( -1 < (b = buffer.get()) )
 				{
-					internal_string = new String(buff, 0, bytes_left, StandardCharsets.UTF_8);
-					if (buff_ref.get() != buff) buff_ref = new SoftReference<>(buff);
-					buff       = null;
-					bytes_left = 0;
+					u8 |= (long) b << bytes_left;
 					return true;
 				}
-				else (bytes_left == buff.length - 1 ? buff = Arrays.copyOf(buff, bytes_left + bytes_left / 2) : buff)[bytes_left] = b;
+			
 			return false;
 		}
-		public boolean isOpen() {return slot != null;}
 		
-		public void close()     {write(null);}
+		public static long zig_zag( long src ) { return -(src & 1) ^ src >>> 1; }
+//endregion
+//region dims
 		
-		@Override public String toString() {
-			Slot s = slot;
-			while (s.prev != null) s = s.prev;
-			StringBuilder str    = new StringBuilder();
-			String        offset = "";
-			for (; s != slot; s = s.next, offset += "\t")
-			     str.append(offset).append(s.dst.getClass().getCanonicalName()).append("\t").append(state()).append("\n");
+		private static final int[] empty = new int[0];
+		private              int[] dims  = empty; //temporary buffer for the receiving string and more
+		
+		public void init_dims( int size ) {
+			u8 = 1;
+			if( size <= dims.length )
+				return;
+			dims = new int[size];
+		}
+		
+		public int dim( int index ) { return dims[index]; }
+		
+		public void dim( int max, int index ) {
+			int dim = u4;
+			if( max < dim )
+				error_handler.error( this, OnError.OVERFLOW, new IllegalArgumentException( "In dim  (int max, int index){} max < dim : " + max + " < " + dim ) );
+			              
+			              u8 *= dim;
+			dims[index] = dim;
+		}
+		
+		public int length( long max ) {
+			int len = u4;
+			if( len <= max )
+				return len;
 			
-			str.append(offset).append(s.dst.getClass().getCanonicalName()).append("\t").append(state()).append("\n");
+			error_handler.error( this, OnError.OVERFLOW, new IllegalArgumentException( "In length  (long max){} max < len : " + max + " < " + len ) );
+			u8 = 0;
+			return 0;
+		}
+//endregion
+//region string
+		
+		//getting the result of an internal receiving
+		public String get_string() {
+			String ret = str;
+			str = null;
+			return ret;
+		}
+		
+		public boolean try_get_string( int max_chars, int get_string_case ) {
+			u4  = max_chars;
+			u8_ = -1; //indicate state before string length received
+			
+			u8         = 0;         //varint receiving string char holde
+			bytes_left = 0; //varint pointer
+			if( varint() && //getting string length into u8
+			    check_length_and_getting_string() )
+				return true;
+			
+			slot.state = get_string_case;
+			mode       = STR; //lack of received bytes, switch to receiving internally
+			return false;
+		}
+		
+		private SoftReference<char[]> chs_ref = new SoftReference<>( null ); //temporary buffer for the received string
+		private char[]                chs     = null;
+		
+		private boolean check_length_and_getting_string() {
+			
+			if( u4 < u8 )
+				error_handler.error( this, OnError.OVERFLOW, new IllegalArgumentException( "In check_length_and_getting_string  (){} u4 < u8 : " + u4 + " < " + u8 ) );
+			
+			if( chs == null && (chs = chs_ref.get()) == null || chs.length < u8 )
+				chs_ref = new SoftReference<>( chs = new char[(int) u8] );
+			
+			u8_ = u8; //store string length into u8_
+			u4  = 0;   //index 1receiving char
+			
+			return getting_string();
+		}
+		
+		private boolean getting_string() {
+			
+			while( u4 < u8_ )
+			{
+				u8         = 0;
+				bytes_left = 0;
+				if( varint() )
+					chs[u4++] = (char) u8;
+				else
+					return false;
+			}
+			str = new String( chs, 0, u4 );
+			return true;
+		}
+//endregion
+		
+		public int remaining() { return buffer.remaining(); }
+		
+		public int position()  { return buffer.position(); }
+		
+		@Override
+		public String toString() {
+			if( slot == null )
+				return super.toString() + " \uD83D\uDCA4";
+			Slot s = slot;
+			while( s.prev != null )
+				s = s.prev;
+			StringBuilder str    = new StringBuilder( super.toString() + "\n" );
+			String        offset = "";
+			for( ; s != slot; s = s.next, offset += "\t" )
+			     str.append( offset ).append( s.dst.getClass().getCanonicalName() ).append( "\t" ).append( s.state ).append( "\n" );
+			
+			str.append( offset ).append( s.dst.getClass().getCanonicalName() ).append( "\t" ).append( s.state ).append( "\n" );
 			
 			return str.toString();
 		}
 	}
 	
-	public static class Transmitter extends AdHoc implements EXT.BytesSrc, Context.Provider {
-		public AdHoc.INT.BytesSrc.Producer int_src;
-		public LongSupplier                int_values_src;
-		
-		public Transmitter(AdHoc.INT.BytesSrc.Producer int_src, LongSupplier int_values_src) {
-			this.int_src        = int_src;
-			this.int_values_src = int_values_src;
+	public abstract static class Transmitter extends Context.Transmitter implements BytesSrc {
+		public interface EventsHandler {
+			default void on_sending( Transmitter dst, BytesSrc src ) { }
+			
+			default void sent( Transmitter dst, BytesSrc src )       { }
 		}
 		
-		public static class Framing implements EXT.BytesSrc {
+		public interface BytesSrc {
+			boolean __get_bytes( Transmitter dst );
 			
-			public Transmitter src;
-			public Framing(Transmitter src) {
-				src.pack_by_pack_mode = true;//switch to pack-by-pack mode
-				this.src              = src;
+			int __id();
+		}
+		
+		public volatile      EventsHandler                                           handler;
+		private static final AtomicReferenceFieldUpdater<Transmitter, EventsHandler> exchange = AtomicReferenceFieldUpdater.newUpdater( Transmitter.class, EventsHandler.class, "handler" );
+		
+		public EventsHandler exchange( EventsHandler dst ) { return exchange.getAndSet( this, dst ); }
+		
+		public Transmitter( EventsHandler handler )        { this( handler, 5 ); }
+		
+		public Transmitter( EventsHandler handler, int power_of_2_sending_queue_size ) {
+			this.handler = handler;
+			
+			sending       = new RingBuffer<BytesSrc>( BytesSrc.class, power_of_2_sending_queue_size );
+			sending_value = new LongRingBuffer( power_of_2_sending_queue_size );
+		}
+		
+		Consumer<AdHoc.BytesSrc> subscriber; /* http://adhoc.lan:1968/InJAVA/5115/ */
+		
+		@Override
+		public Consumer<AdHoc.BytesSrc> subscribe_on_new_bytes_to_transmit_arrive( Consumer<AdHoc.BytesSrc> subscriber ) {
+			Consumer<AdHoc.BytesSrc> tmp = this.subscriber;
+			if( (this.subscriber = subscriber) != null && !isOpen() )
+				subscriber.accept( this );
+			return tmp;
+		}
+//region sending
+		
+		public final RingBuffer<BytesSrc> sending;
+		public final LongRingBuffer       sending_value;
+		
+		protected volatile int lock = 0;
+		
+		protected boolean send( Transmitter.BytesSrc src ) {
+			while( !lock_update.compareAndSet( this, 0, 1 ) )
+				Thread.yield();
+			
+			if( !sending.put( src ) )
+			{
+				lock = 0;
+				return false;
 			}
 			
-			@Override public int read(ByteBuffer dst) {
-				if (dst == null)
+			lock = 0;
+			if( subscriber != null )
+				subscriber.accept( this );
+			return true;
+		}
+		
+		protected boolean send( AdHoc.Transmitter.BytesSrc handler, long src ) {
+			
+			while( !lock_update.compareAndSet( this, 0, 1 ) )
+				Thread.yield();
+			if( !sending_value.put( src ) )
+			{
+				lock = 0;
+				return false;
+			}
+			
+			sending.put( handler );
+			lock = 0;
+			if( subscriber != null )
+				subscriber.accept( this );
+			return true;
+		}
+		
+		private static final AtomicIntegerFieldUpdater<Transmitter> lock_update = AtomicIntegerFieldUpdater.newUpdater( Transmitter.class, "lock" );
+//endregion
+//region value_pack transfer
+		
+		public void pull_value() { u8 = sending_value.get( 0 ); }
+		
+		public boolean put_bytes( long src, BytesSrc handler, int next_case ) {
+			
+			u8 = src;
+			return put_bytes( handler, next_case );
+		}
+		
+		public void put_bytes( BytesSrc src ) {
+			
+			slot.state = 1; //skip write id
+			src.__get_bytes( this );
+		}
+		
+		public boolean put_bytes( BytesSrc src, int next_case ) {
+			
+			final Slot s = slot;
+			
+			(slot = s.next == null ? s.next = new Slot( this, s ) : s.next).src = src;
+			this.slot.state                                                     = 1; //skip write id
+			
+			if( src.__get_bytes( this ) )
+			{
+				slot = s;
+				return true;
+			}
+			
+			s.state = next_case;
+			return false;
+		}
+//endregion
+		
+		public static class Framing implements AdHoc.BytesSrc, EventsHandler {
+			
+			public               Transmitter                                         upper_layer;
+			public volatile      EventsHandler                                       handler;
+			private static final AtomicReferenceFieldUpdater<Framing, EventsHandler> exchange = AtomicReferenceFieldUpdater.newUpdater( Framing.class, EventsHandler.class, "handler" );
+			
+			public EventsHandler exchange( EventsHandler dst ) { return exchange.getAndSet( this, dst ); }
+			
+			public Framing( Transmitter upper_layer )          { switch_to( upper_layer ); }
+			
+			public void switch_to( Transmitter upper_layer ) {
+				bits  = 0;
+				shift = 0;
+				crc   = 0;
+				if( this.upper_layer != null )
 				{
-					src.read(null);
-					bits  = 0;
-					shift = 0;
-					crc   = 0;
-					return -1;
+					this.upper_layer.reset();
+					this.upper_layer.exchange( handler );
 				}
+				
+				handler = (this.upper_layer = upper_layer).exchange( this );
+			}
+			
+			private int enc_position; //where start to put encoded bytes
+			private int raw_position; //start position for temporarily storing raw bytes from the upper layer
+			
+			private boolean allocate_raw_bytes_space( ByteBuffer buffer ) {
+				//divide free space.
+				raw_position = (enc_position = buffer.position()) + //dst.position ()
+				               1 +                                  //for 0xFF byte - frame start mark.
+				               buffer.remaining() / 8 +             //ensure enough space for encoded bytes in a worse case
+				               CRC_LEN_BYTES + 2;                   //guaranty space for CRC + its expansion
+				
+				if( raw_position < buffer.limit() )
+				{
+					buffer.position( raw_position );
+					return true;
+				}
+				
+				buffer.position( enc_position ).limit( enc_position ); //no more space. prevent continue
+				return false;
+			}
+			
+			@Override
+			public void close() {
+				reset();
+				upper_layer.close();
+			}
+			
+			private void reset() {
+				upper_layer.reset();
+				bits  = 0;
+				shift = 0;
+				crc   = 0;
+			}
+			
+			@Override
+			public int read( ByteBuffer dst ) throws IOException {
 				
 				final int fix_position = dst.position();
-				
-				while (dst.hasRemaining())
+				while( allocate_raw_bytes_space( dst ) )
 				{
-					final boolean write_starting_frame_byte_FF = src.slot == null || src.slot.src == null;
+					int len = upper_layer.read( dst ); //getting bytes from the upper layer
 					
-					final int enc_position = dst.position();//where start to put encoded bytes
-					int       raw_position = enc_position + dst.remaining() / 8 + CRC_LEN_BYTES + 1 + 2;// + 1 for 0xFF byte - frame start mark. start position for temporarily storing raw bytes from the source
-					
-					dst.position(raw_position);
-					
-					int len = src.read(dst);
-					
-					final int raw_max = dst.position();
-					dst.position(enc_position);
-					
-					if (len < 1) return fix_position < enc_position ? enc_position - fix_position : len;
-					
-					if (write_starting_frame_byte_FF) dst.put((byte) 0xFF);//write starting frame byte
-					
-					for (; raw_position < raw_max; raw_position++) encode(dst.get(raw_position) & 0xFF, dst);
-					
-					if (src.slot == null || src.slot.src == null)//the packet sending completed
+					if( len < 1 )
 					{
-						final int fix = crc;// crc will continue counting on call encode(), so fix it
-						encode(fix >> 8 & 0xFF, dst);
-						encode(fix & 0xFF, dst);
-						if (0 < shift) dst.put((byte) bits);
-						
-						bits  = 0;
-						shift = 0;
-						crc   = 0;
+						dst.limit( enc_position ).position( enc_position );
+						return fix_position < enc_position ? enc_position - fix_position : len;
 					}
+					
+					encode( dst );
 				}
 				
-				return fix_position < dst.position() ? dst.position() - fix_position : 0;
+				return fix_position < enc_position ? enc_position - fix_position : 0;
 			}
 			
-			private void encode(int src, ByteBuffer dst) {
+			@Override
+			public void on_sending( Transmitter dst, BytesSrc src ) {
+				handler.on_sending( dst, src );
 				
-				crc = crc16(src, crc);
+				dst.buffer.put( enc_position++, (byte) 0xFF ); //write starting frame byte
+				dst.buffer.position( ++raw_position );        //less space
+			}
+			
+			public void sent( Transmitter dst, BytesSrc pack ) {
+				encode( dst.buffer );
+				
+				//the packet sending completed write crc
+				int fix = crc; //crc will continue counting on encode () calling , so fix it
+				encode( fix >> 8 & 0xFF, dst.buffer );
+				encode( fix & 0xFF, dst.buffer );
+				if( 0 < shift )
+				{
+					dst.put( (byte) bits );
+					if( bits == 0x7F )
+						dst.put( (byte) 0 );
+				}
+				
+				allocate_raw_bytes_space( dst.buffer );
+				
+				bits  = 0;
+				shift = 0;
+				crc   = 0;
+				handler.sent( dst, pack ); //pass
+			}
+			
+			private void encode( ByteBuffer buffer ) {
+				final int raw_position_max = buffer.position();
+				buffer.position( enc_position ); //switch to encoded position
+				while( raw_position < raw_position_max )
+					encode( buffer.get( raw_position++ ) & 0xFF, buffer );
+				enc_position = buffer.position();
+			}
+			
+			private void encode( int src, ByteBuffer dst ) {
+				
+				crc = crc16( src, crc );
 				final int v = (bits |= src << shift) & 0xFF;
 				
-				if ((v & 0x7F) == 0x7F)
+				if( (v & 0x7F) == 0x7F )
 				{
-					dst.put((byte) 0x7F);
+					dst.put( (byte) 0x7F );
 					bits >>= 7;
 					
-					if (shift < 7) shift++;
-					else //                          a full byte in enc_bits
+					if( shift < 7 )
+						shift++;
+					else //a full byte in `bits`
 					{
-						if ((bits & 0x7F) == 0x7F)
+						if( (bits & 0x7F) == 0x7F )
 						{
-							dst.put((byte) 0x7F);
+							dst.put( (byte) 0x7F );
 							bits >>= 7;
 							
 							shift = 1;
 							return;
 						}
 						
-						dst.put((byte) bits);
+						dst.put( (byte) bits );
 						shift = 0;
-						
-						bits = 0;
+						bits  = 0;
 					}
 					return;
 				}
 				
-				dst.put((byte) v);
+				dst.put( (byte) v );
 				bits >>= 8;
 			}
+			
+			@Override
+			public Consumer<AdHoc.BytesSrc> subscribe_on_new_bytes_to_transmit_arrive( Consumer<AdHoc.BytesSrc> subscriber ) { return upper_layer.subscribe_on_new_bytes_to_transmit_arrive( subscriber ); }
 			
 			private int  bits  = 0;
 			private int  shift = 0;
 			private char crc   = 0;
-			@Override public boolean isOpen() {return src.isOpen();}
-			@Override public void close()     {read(null);}
+			
+			@Override
+			public boolean isOpen() { return upper_layer.isOpen(); }
 		}
-
-
 //region Slot
 		
-		private static final class Slot {
+		public static final class Slot extends Context.Transmitter.Slot {
 			
-			int                state;
-			AdHoc.INT.BytesSrc src;
-			int                base_index;
-			int                base_index2;
-			int                base_index_max;
-			int                fields_nulls;
+			BytesSrc src;
 			
-			int index;
-			int index2;
-			int index_max;
+			int fields_nulls;
 			
-			Slot next;
-			final Slot prev;
+			private       Slot next;
+			private final Slot prev;
 			
-			public Slot(Slot prev) {
+			public Slot( Transmitter src, Slot prev ) {
+				super( src );
 				this.prev = prev;
-				if (prev != null) prev.next = this;
-			}
-			
-			
-			ContextExt context;
-		}
-		
-		protected SoftReference<Slot> slot_ref = new SoftReference<>(new Slot(null));
-		protected Slot                slot;
-		
-		private void free_slot() {
-			if (slot.context != null)
-			{
-				context      = slot.context.prev;
-				slot.context = null;
-			}
-			
-			slot = slot.prev;
-		}
-//endregion
-
-//region Context
-		
-		private static class ContextExt extends Context {
-			
-			public       ContextExt next;
-			public final ContextExt prev;
-			
-			public ContextExt(ContextExt prev) {
-				this.prev = prev;
-				if (prev != null) prev.next = this;
+				if( prev != null )
+					prev.next = this;
 			}
 		}
 		
+		protected SoftReference<Slot> slot_ref = new SoftReference<>( new Slot( this, null ) );
+		public    Slot                slot;
 		
-		private ContextExt                context;
-		private SoftReference<ContextExt> context_ref = new SoftReference<>(new ContextExt(null));
-		
-		public Context context() {
-			
-			if (slot.context != null) return slot.context;
-			
-			if (context == null && (context = context_ref.get()) == null) context_ref = new SoftReference<>(context = new ContextExt(null));
-			else if (context.next == null) context = context.next = new ContextExt(context);
-			else context = context.next;
-			
-			return slot.context = context;
-		}
-
+		public boolean isOpen() { return slot != null; } //has data
 //endregion
 		
-		public int state()            {return slot.state;}
+		@Override
+		public void close() { reset(); }
 		
-		public void state(int value)  {slot.state = value;}
-		
-		
-		public int position()         {return buffer.position();}
-		
-		public int remaining()        {return buffer.remaining();}
-		
-		public int index()            {return slot.index;}
-		
-		public int index(int value)   {return slot.index = value;}
-		
-		public int index2()           {return slot.index2;}
-		
-		public void index2(int value) {slot.index2 = value;}
-		
-		public int index_max()        {return slot.index_max;}
-		
-		public int index_max(int max) {
-			slot.index = 0;
-			return slot.index_max = max;
-		}
-		public boolean index_less_max(int jump_case) {
-			if (slot.index_max <= slot.index) return false;
-			state(jump_case);
-			return true;
-		}
-		
-		
-		public boolean index_max_zero(int on_zero_case) {
-			if (0 < slot.index_max) return false;
-			state(on_zero_case);
-			return true;
-		}
-		
-		public int base_index()          {return slot.base_index;}
-		
-		public int base_index(int value) {return slot.base_index = value;}
-		
-		public int base_index_max()      {return slot.base_index_max;}
-		
-		public int base_index_max(int base_len) {
-			slot.base_index = 0;
-			return slot.base_index_max = base_len;
-		}
-		
-		
-		public void base_index2(int value) {slot.base_index2 = value;}
-		
-		public boolean next_index2()       {return ++slot.index < slot.index2;}
-		
-		public boolean next_index()        {return ++slot.index < slot.index_max;}
-		
-		public boolean next_index(int yes_case) {
-			if (++slot.index < slot.index_max)
-			{
-				state(yes_case);
-				return true;
-			}
-			return false;
-		}
-		
-		public boolean next_index(int yes_case, int no_case) {
+		protected void reset() {
+			if( slot == null )
+				return;
 			
-			if (++slot.index < slot.index_max)
-			{
-				state(yes_case);
-				return true;
-			}
-			state(no_case);
-			return false;
+			for( Slot s = slot; s != null; s = s.next )
+			     s.src = null;
+			slot = null;
+			
+			sending.clear();
+			sending_value.clear();
+			
+			buffer     = null;
+			mode       = OK;
+			u4         = 0;
+			bytes_left = 0;
 		}
 		
+		public int position()  { return buffer.position(); }
 		
-		public int index_next(int next_state) {
-			++slot.index;
-			state(slot.index_max == slot.index ? next_state + 1 : next_state);
-			return slot.index - 1;
-		}
+		public int remaining() { return buffer.remaining(); }
 		
-		
-		public boolean base_index_less_max(int jump_case) {
-			if (slot.base_index_max <= slot.base_index) return false;
-			state(jump_case);
-			return true;
-		}
-		
-		public boolean next_base_index2() {return ++slot.base_index < slot.base_index2;}
-		
-		public boolean next_base_index()  {return ++slot.base_index < slot.base_index_max;}
-		
-		
-		public boolean init_fields_nulls(int field0_bit, int current_case) {
-			if (!allocate(1, current_case)) return false;
+		public boolean init_fields_nulls( int field0_bit, int this_case ) {
+			if( !allocate( 1, this_case ) )
+				return false;
 			slot.fields_nulls = field0_bit;
 			return true;
 		}
 		
-		public void set_fields_nulls(int field) {slot.fields_nulls |= field;}
+		public void set_fields_nulls( int field ) { slot.fields_nulls |= field; }
 		
-		public void flush_fields_nulls()        {put((byte) slot.fields_nulls);}
+		public void flush_fields_nulls()          { put( (byte) slot.fields_nulls ); }
 		
-		public boolean is_null(int field, int next_field_case) {
-			if ((slot.fields_nulls & field) == 0)
+		public boolean is_null( int field, int next_field_case ) {
+			if( (slot.fields_nulls & field) == 0 )
 			{
-				state(next_field_case);
+				slot.state = next_field_case;
 				return true;
 			}
 			return false;
 		}
 		
-		// if dst == null - clean / reset state
+		//if dst == null - clean / reset state
 		//
-		// if 0 < return - bytes read
-		// if return == 0 - not enough space available
-		// if return == -1 -  no more packets left
-		public int read(ByteBuffer dst) {
-			
-			if (dst == null)//reset
-			{
-				if (slot == null) return -1;
-				buffer = null;
-				
-				while (slot != null)
-				{
-					slot.src = null;
-					free_slot();
-				}
-				
-				mode = OK;
-				
-				u4         = 0;
-				bytes_left = 0; //requires correct bitwise sending
-				
-				return -1;
-			}
+		//if 0 < return - bytes read
+		//if return == 0 - not enough space available
+		//if return == -1 - no more packets left
+		public int read( ByteBuffer dst ) {
 			
 			buffer = dst;
-			final int position = buffer.position();
+			final int fix = buffer.position();
 read:
-			for (; ; )
 			{
-				if (slot == null || slot.src == null)
+				for( ; buffer.hasRemaining(); )
 				{
-					if ((slot = slot_ref.get()) == null) slot_ref = new SoftReference<>(slot = new Slot(null));
-					
-					if ((slot.src = int_src.sending(this)) == null)
+					if( slot == null || slot.src == null )
 					{
-						final int ret = buffer.position() - position;
-						buffer = null;
-						free_slot();//remove hard links
+						final BytesSrc src = sending.get( null );
 						
-						return 0 < ret ? ret : -1;
-					}
-					
-					slot.state = 0; //write id request
-					
-					u4         = 0;
-					bytes_left = 0;
-					slot.index = 0;
-				}
-				else switch (mode) //the packet transmission was interrupted, recall where we stopped
-				{
-					case STR:
-						if (!encode(internal_string)) break read;
-						internal_string = null;
-						break;
-					case VAL4:
-						if (buffer.remaining() < bytes_left) break read;
-						put_val(u4, bytes_left);
-						break;
-					case VAL8:
-						if (buffer.remaining() < bytes_left) break read;
-						put_val(u8, bytes_left);
-						break;
-					case VARINTS:
-						if (buffer.remaining() < 25) break read;//space for one full transaction
-						bits_byte = buffer.position();//preserve space for bits info
-						buffer.position(bits_byte + 1);
-						put_val(u8, bytes_left);
-						break;
-					case VARINT:
-						if (buffer.hasRemaining() && put_varint(u8, state())) break;
-						break read;
-					case BITS:
-						if (buffer.remaining() < 4) break read;
-						bits_byte = buffer.position();//preserve space for bits info
-						buffer.position(bits_byte + 1);
-						break;
-				}
-				mode = OK; //restore the state
-				
-				for (AdHoc.INT.BytesSrc src; ; )
-					if ((src = slot.src.get_bytes(this)) == null) //not going deeper in the hierarchy
-					{
-						if (mode < OK) break read; //there is not enough space in the provided buffer for further work
+						if( src == null )
+						{
+							int ret = buffer.position() - fix;
+							this.reset();
+							return 0 < ret ? ret : -1;
+						}
 						
-						if (slot.prev == null) break; //it was the root level all packet data sent
+						if( slot == null )
+							if( (slot = slot_ref.get()) == null )
+								slot_ref = new SoftReference<>( slot = new Slot( this, null ) );
 						
-						//slot.src = null               // do not do this. sometime can be used
-						free_slot();
-					}
-					else  //go into the hierarchy deeper
-					{
-						slot       = slot.next == null ? slot.next = new Slot(slot) : slot.next;
 						slot.src   = src;
-						slot.state = 1; //skip write id
+						slot.state = 0; //write id request
+						u4         = 0;
+						bytes_left = 0;
+						this.handler.on_sending( this, src );
+						if( slot == null )
+							return -1; //sending event handler has reset this
 					}
+					else
+					{
+						switch( mode ) //the packet transmission was interrupted, recall where we stopped
+						{
+							case STR:
+								if( !varint() )
+									break read;
+								if( u4 == -1 )
+									u4 = 0; //now ready getting string
+								
+								while( u4 < str.length() )
+									if( !varint( str.charAt( u4++ ) ) )
+										break read;
+								
+								str = null;
+								break;
+							case VAL4:
+								if( buffer.remaining() < bytes_left )
+									break read;
+								put_val( u4, bytes_left );
+								break;
+							case VAL8:
+								if( buffer.remaining() < bytes_left )
+									break read;
+								put_val( u8, bytes_left );
+								break;
+							case BITS_BYTES:
+								if( buffer.remaining() < bits_transaction_bytes_ )
+									break read;                //space for one full transaction
+								bits_byte = buffer.position(); //preserve space for bits info
+								buffer.position( bits_byte + 1 );
+								put_val( u8, bytes_left );
+								break;
+							case VARINT:
+								if( varint() )
+									break;
+								break read;
+							case BITS:
+								if( buffer.remaining() < bits_transaction_bytes_ )
+									break read;                //space for one full transaction
+								bits_byte = buffer.position(); //preserve space for bits info
+								buffer.position( bits_byte + 1 );
+								break;
+						}
+					}
+					
+					mode = OK;
+					for( ; ; )
+						if( !slot.src.__get_bytes( this ) )
+							break read;
+						else
+						{
+							
+							if( slot.prev == null )
+								break;
+							slot = slot.prev;
+						}
+					
+					handler.sent( this, slot.src );
+					if( slot == null )
+						return -1;   //sent event handler has reset this
+					slot.src = null; //sing of next packet data request
+				} //read loop
 				
-				int_src.sent(this, slot.src);
-				slot.src = null; //sing of next packet data request
-				if (!pack_by_pack_mode) continue;
-				
-				free_slot();//remove hard links
-				break;
+				if( slot != null && slot.src == null )
+					slot = null;
 			}
 			
-			int ret = buffer.position() - position;
+			int ret = buffer.position() - fix;
 			buffer = null;
 			
-			return ret; // number of bytes read
-		}// read loop
+			return 0 < ret ? ret : -1;
+		}
 		
-		
-		public void put(Boolean src) {put_bits(src == null ? 0 : src ? 1 : 2, 2);}
-		
-		public void put(boolean src) {put_bits(src ? 1 : 0, 1);}
-		
-		
-		public boolean allocate(int bytes, int current_case) {
-			if (bytes <= buffer.remaining()) return true;
-			slot.state = current_case;
-			mode       = DONE;
+		public boolean allocate( int bytes, int this_case ) {
+			slot.state = this_case;
+			if( bytes <= buffer.remaining() )
+				return true;
+			mode = RETRY;
 			return false;
 		}
-
+		
+		public void put( Boolean src ) {
+			put_bits( src == null ? 0 : src ? 1
+			                                : 2,
+			          2 );
+		}
+		
+		public void put( boolean src ) {
+			put_bits( src ? 1 : 0, 1 );
+		}
 //region bits
 		
 		private int bits_byte = -1;
+		private int bits_transaction_bytes_;
 		
-		public boolean allocate(int current_case) { //space request (20 bytes) for at least one transaction is called once on the first varint, as continue of `init_bits`
-			if (17 < buffer.remaining()) return true;
+		public boolean init_bits_( int transaction_bytes, int this_case ) {
+			if( (bits_transaction_bytes_ = transaction_bytes) <= buffer.remaining() )
+				return true; //26 byte wost case 83: 3 bits x 3times x 8 bytes
 			
-			state(current_case);
-			buffer.position(bits_byte);//trim byte at bits_byte index
+			slot.state = this_case;
+			buffer.position( bits_byte ); //trim byte at bits_byte index
 			
 			mode = BITS;
 			return false;
 		}
 		
-		public boolean init_bits(int current_case) {return init_bits(20, current_case);}//varint init_bits
-		
-		public boolean init_bits(int allocate_bytes, int current_case) {
-			if (buffer.remaining() < allocate_bytes)
+		public boolean init_bits( int transaction_bytes, int this_case ) {
+			if( buffer.remaining() < (bits_transaction_bytes_ = transaction_bytes) )
 			{
-				slot.state = current_case;
-				mode       = DONE;
+				slot.state = this_case;
+				mode       = RETRY;
 				return false;
 			}
 			
 			bits = 0;
 			bit  = 0;
 			
-			bits_byte = buffer.position();//place fixation
-			buffer.position(bits_byte + 1);
+			bits_byte = buffer.position(); //place fixation
+			buffer.position( bits_byte + 1 );
 			return true;
 		}
 		
-		
-		//check, if in bits enougt data, then flush first `bits` byte into uotput buffer at bits_byte index
-		//and switch to new place - bits_byte
-		public boolean put_bits(int src, int len_bits) {
+		public void put_bits( int src, int len_bits ) {
 			bits |= src << bit;
-			if ((bit += len_bits) < 9) return false; //yes 9! not 8!  to avoid allocating the next byte after the current one is full. it is might be redundant
+			if( (bit += len_bits) < 9 )
+				return; //yes 9! not 8! to avoid allocating the next byte after the current one is
+			//full. it is might be redundant
 			
-			buffer.put(bits_byte, (byte) bits);//sending
+			buffer.put( bits_byte, (byte) bits ); //sending
 			
 			bits >>= 8;
 			bit -= 8;
 			
 			bits_byte = buffer.position();
-			if (buffer.hasRemaining()) buffer.position(bits_byte + 1);
+			if( buffer.hasRemaining() )
+				buffer.position( bits_byte + 1 );
+		}
+		
+		public boolean put_bits( int src, int len_bits, int continue_at_case ) {
+			bits |= src << bit;
+			if( (bit += len_bits) < 9 )
+				return true; //yes 9! not 8! to avoid allocating the next byte after the current one is
+			//full. it is might be redundant
+			
+			buffer.put( bits_byte, (byte) bits ); //sending
+			
+			bits >>= 8;
+			bit -= 8;
+			
+			if( buffer.remaining() < bits_transaction_bytes_ )
+			{
+				slot.state = continue_at_case;
+				return false;
+			}
+			
+			bits_byte = buffer.position();
+			buffer.position( bits_byte + 1 );
 			return true;
 		}
 		
 		public void end_bits() {
-			if (0 < bit) buffer.put(bits_byte, (byte) bits);
-			else buffer.position(bits_byte);//trim byte at bits_byte index. allocated, but not used
+			if( 0 < bit )
+				buffer.put( bits_byte, (byte) bits );
+			else
+				buffer.position( bits_byte ); //trim byte at bits_byte index. allocated, but not used
 		}
 		
-		public void continue_bits_at(int continue_at_case) {
-			state(continue_at_case);
-			buffer.position(bits_byte);//trim byte at bits_byte index
+		public boolean put_nulls( int nulls, int nulls_bits, int continue_at_case ) {
+			if( put_bits( nulls, nulls_bits, continue_at_case ) )
+				return true;
+			
+			mode = BITS;
+			return false;
+		}
+		
+		public void continue_bits_at( int continue_at_case ) {
+			slot.state = continue_at_case;
+			buffer.position( bits_byte ); //trim byte at bits_byte index
 			mode = BITS;
 		}
-
-
 //endregion
+//region varint
 		
-		//region single varint
-		public boolean put_varint(long src, int next_case) {
-			while (buffer.hasRemaining())
+		public boolean put_bits_bytes( int info, int info_bits, long value, int value_bytes, int continue_at_case ) {
+			if( put_bits( info, info_bits, continue_at_case ) )
 			{
-				if ((src & ~0x7F) == 0)
-				{
-					buffer.put((byte) src);
-					return true;
-				}
-				buffer.put((byte) (~0x7F | src & 0x7F));
-				src >>>= 7;
-			}
-			
-			u8 = src;
-			state(next_case);
-			mode = VARINT;
-			return false;
-		}
-//endregion
-
-//region varint collection
-		
-		private static int bytes1(long src) {return src < 1 << 8 ? 1 : 2;}
-		
-		public boolean put_varint21(long src, int continue_at_case) {
-			int bytes = bytes1(src);
-			return put_varint(bytes - 1, 1, src & 0xFFFFL, bytes, continue_at_case);
-		}
-		
-		public boolean put_varint211(long src, int continue_at_case) {
-			int bytes = bytes1(src);
-			
-			return put_varint(bytes - 1 << 1 | 1, 2, src & 0xFFFFL, bytes, continue_at_case);
-		}
-		
-		public long zig_zag(short src)      {return (src << 1 ^ (int) src >> 15) & 0xFFFFL;}
-		
-		private static int bytes2(long src) {return src < 1 << 8 ? 1 : src < 1 << 16 ? 2 : 3;}
-		
-		public boolean put_varint32(long src, int continue_at_case) {
-			if (src == 0) return put_varint(2, continue_at_case);
-			
-			int bytes = bytes2(src);
-			return put_varint(bytes, 2, src & 0xFFFF_FFL, bytes, continue_at_case);
-		}
-		
-		public boolean put_varint321(long src, int continue_at_case) {
-			if (src == 0) return put_varint(3, continue_at_case);
-			
-			int bytes = bytes2(src);
-			return put_varint(bytes << 1 | 1, 3, src & 0xFFFF_FFL, bytes, continue_at_case);
-		}
-		
-		
-		public long zig_zag(int src)        {return (src << 1 ^ src >> 31) & 0xFFFF_FFFFL;}
-		
-		private static int bytes3(long src) {return src < 1L << 16 ? src < 1L << 8 ? 1 : 2 : src < 1L << 24 ? 3 : 4;}
-		
-		public boolean put_varint42(long src, int continue_at_case) {
-			int bytes = bytes3(src);
-			return put_varint(bytes - 1, 2, src & 0xFFFF_FFFFL, bytes, continue_at_case);
-		}
-		
-		public boolean put_varint421(long src, int continue_at_case) {
-			int bytes = bytes3(src);
-			return put_varint(bytes - 1 << 1 | 1, 3, src & 0xFFFF_FFFFL, bytes, continue_at_case);
-		}
-		
-		public long zig_zag(long src) {return src << 1 ^ src >> 63;}
-		
-		private static int bytes4(long src) {
-			return src < 1 << 24 ? src < 1 << 16 ? src < 1 << 8 ? 1 : 2 : 3 :
-			       src < 1L << 32 ? 4 :
-			       src < 1L << 40 ? 5 :
-			       src < 1L << 48 ? 6 : 7;
-		}
-		
-		public boolean put_varint73(long src, int continue_at_case) {
-			if (src == 0) return put_varint(3, continue_at_case);
-			
-			int bytes = bytes4(src);
-			
-			return put_varint(bytes, 3, src, bytes, continue_at_case);
-		}
-		public boolean put_varint731(long src, int continue_at_case) {
-			if (src == 0) return put_varint(4, continue_at_case);
-			
-			int bytes = bytes4(src);
-			
-			return put_varint(bytes << 1 | 1, 4, src, bytes, continue_at_case);
-		}
-		
-		private static int bytes5(long src) {
-			return src < 0 ? 8 : src < 1L << 32 ? src < 1 << 16 ? src < 1 << 8 ? 1 : 2 :
-			                                      src < 1 << 24 ? 3 : 4 :
-			                     src < 1L << 48 ? src < 1L << 40 ? 5 : 6 :
-			                     src < 1L << 56 ? 7 : 8;
-		}
-		
-		
-		public boolean put_varint83(long src, int continue_at_case) {
-			int bytes = bytes5(src);
-			return put_varint(bytes - 1, 3, src, bytes, continue_at_case);
-		}
-		public boolean put_varint831(long src, int continue_at_case) {
-			
-			int bytes = bytes5(src);
-			return put_varint(bytes - 1 << 1 | 1, 4, src, bytes, continue_at_case);
-		}
-		
-		public boolean put_varint84(long src, int continue_at_case) {
-			if (src == 0) return put_varint(4, continue_at_case);
-			
-			int bytes = bytes5(src);
-			
-			return put_varint(bytes, 4, src, bytes, continue_at_case);
-		}
-		
-		public boolean put_varint841(long src, int continue_at_case) {
-			if (src == 0) return put_varint(5, continue_at_case);
-			
-			int bytes = bytes5(src);
-			
-			return put_varint(bytes << 1 | 1, 5, src, bytes, continue_at_case);
-		}
-		
-		
-		public boolean put_varint(int bits, int continue_at_case) {
-			if (!put_bits(0, bits) || 20 < remaining()) return true;
-			continue_bits_at(continue_at_case);
-			return false;
-		}
-		
-		private boolean put_varint(int bytes_info, int bits, long varint, int bytes, int continue_at_case) {
-			//                                                   break here is OK
-			if (put_bits(bytes_info, bits) && remaining() < 25)//wost case 83: 3 bits x 3times x 8 bytes
-			{
-				u8         = varint; //fix value
-				bytes_left = bytes;//fix none zero LSB length
-				
-				state(continue_at_case);
-				buffer.position(bits_byte);
-				mode = VARINTS;
-				return false;
-			}
-			
-			put_val(varint, bytes);
-			return true;
-		}
-//endregion
-		
-		public boolean put_val(long src, int bytes, int next_case) {
-			if (buffer.remaining() < bytes)
-			{
-				put(src, bytes, next_case);
-				return false;
-			}
-			
-			put_val(src, bytes);
-			return true;
-		}
-		private void put_val(long src, int bytes) {
-			
-			switch (bytes)
-			{
-				case 8:
-					buffer.put((byte) (src >>> 56 & 0xFF));
-				case 7:
-					buffer.put((byte) (src >> 48 & 0xFF));
-				case 6:
-					buffer.put((byte) (src >> 40 & 0xFF));
-				case 5:
-					buffer.put((byte) (src >> 32 & 0xFF));
-				case 4:
-					buffer.put((byte) (src >> 24 & 0xFF));
-				case 3:
-					buffer.put((byte) (src >> 16 & 0xFF));
-				case 2:
-					buffer.put((byte) (src >> 8 & 0xFF));
-				case 1:
-					buffer.put((byte) (src & 0xFF));
-			}
-		}
-		
-		
-		public boolean put_len(int len, int bytes, int next_case) {
-			slot.index_max = len;
-			slot.index     = 0;
-			return put_val((int) len, bytes, next_case);
-		}
-		
-		
-		public boolean no_more_items(int key_value_case, int end_case) {
-			if (++slot.index < slot.index_max) return false;
-			if (0 < index2())
-			{
-				index_max(index2());
-				state(key_value_case);
-			}
-			else state(end_case);
-			
-			return true;
-		}
-		
-		public boolean no_more_items(int next_field_case) {
-			if (0 < index_max(index2())) return false;
-			
-			state(next_field_case);
-			return true;
-		}
-		
-		//The method is split. cause of items == 0 no more queries!
-		public boolean zero_items(int items, int next_field_case) {
-			if (items == 0)
-			{
-				put((byte) 0);
-				state(next_field_case);
+				put_val( value, value_bytes );
 				return true;
 			}
 			
-			index_max(items);
+			u8         = value;
+			bytes_left = value_bytes;
+			mode       = BITS_BYTES;
 			return false;
 		}
 		
+		private static int bytes1( long src ) {
+			return src < 1 << 8 ? 1 : 2;
+		}
 		
-		public boolean put_set_info(boolean null_key_present, int next_field_case) {
-			int items         = index_max();
-			int null_key_bits = 0;
+		public boolean put_varint21( long src, int continue_at_case ) {
+			int bytes = bytes1( src );
+			return put_bits_bytes( bytes - 1, 1, src & 0xFFFFL, bytes, continue_at_case );
+		}
+		
+		public boolean put_varint21( long src, int continue_at_case, int nulls, int nulls_bits ) {
+			int bytes = bytes1( src );
+			return put_bits_bytes( bytes - 1 << nulls_bits | nulls, nulls_bits + 1, src & 0xFFFFL, bytes, continue_at_case );
+		}
+		
+		private static int bytes2( long src ) {
+			return src < 1 << 8 ? 1 : src < 1 << 16 ? 2
+			                                        : 3;
+		}
+		
+		public boolean put_varint32( long src, int continue_at_case ) {
+			int bytes = bytes2( src );
+			return put_bits_bytes( bytes, 2, src & 0xFFFF_FFL, bytes, continue_at_case );
+		}
+		
+		public boolean put_varint32( long src, int continue_at_case, int nulls, int nulls_bits ) {
 			
-			if (null_key_present)
-			{
-				null_key_bits = 1 << 7;
-				if (--items == 0)
-				{
-					put((byte) null_key_bits);
-					state(next_field_case);
-					return true;
-				}
-			}
+			int bytes = bytes2( src );
+			return put_bits_bytes( bytes << nulls_bits | nulls, nulls_bits + 2, src & 0xFFFF_FFL, bytes, continue_at_case );
+		}
+		
+		private static int bytes3( long src ) {
+			return src < 1L << 16 ? src < 1L << 8 ? 1 : 2 : src < 1L << 24 ? 3
+			                                                               : 4;
+		}
+		
+		public boolean put_varint42( long src, int continue_at_case ) {
+			int bytes = bytes3( src );
+			return put_bits_bytes( bytes - 1, 2, src & 0xFFFF_FFFFL, bytes, continue_at_case );
+		}
+		
+		public boolean put_varint42( long src, int continue_at_case, int nulls, int nulls_bits ) {
+			int bytes = bytes3( src );
+			return put_bits_bytes( bytes - 1 << nulls_bits | nulls, nulls_bits + 2, src & 0xFFFF_FFFFL, bytes, continue_at_case );
+		}
+		
+		private static int bytes4( long src ) {
+			return src < 1 << 24 ? src < 1 << 16 ? src < 1 << 8 ? 1 : 2 : 3 : src < 1L << 32 ? 4
+			                                                                                 : src < 1L << 40 ? 5
+			                                                                                                  : src < 1L << 48 ? 6
+			                                                                                                                   : 7;
+		}
+		
+		public boolean put_varint73( long src, int continue_at_case ) {
+			int bytes = bytes4( src );
 			
-			index_max(items);//key-value items
-			int bytes = bytes4value(items);
+			return put_bits_bytes( bytes, 3, src, bytes, continue_at_case );
+		}
+		
+		public boolean put_varint73( long src, int continue_at_case, int nulls, int bits ) {
+			int bytes = bytes4( src );
 			
-			put((byte) (null_key_bits | bytes));
-			put_val(items, bytes, 0);
+			return put_bits_bytes( bytes << bits | nulls, bits + 3, src, bytes, continue_at_case );
+		}
+		
+		private static int bytes5( long src ) {
+			return src < 0 ? 8 : src < 1L << 32 ? src < 1 << 16 ? src < 1 << 8 ? 1 : 2 : src < 1 << 24 ? 3
+			                                                                                           : 4
+			                                    : src < 1L << 48 ? src < 1L << 40 ? 5 : 6
+			                                                     : src < 1L << 56 ? 7
+			                                                                      : 8;
+		}
+		
+		public boolean put_varint83( long src, int continue_at_case ) {
+			int bytes = bytes5( src );
+			return put_bits_bytes( bytes - 1, 3, src, bytes, continue_at_case );
+		}
+		
+		public boolean put_varint83( long src, int continue_at_case, int nulls, int nulls_bits ) {
+			int bytes = bytes5( src );
+			return put_bits_bytes( bytes - 1 << nulls_bits | nulls, nulls_bits + 3, src, bytes, continue_at_case );
+		}
+		
+		public boolean put_varint84( long src, int continue_at_case ) {
+			int bytes = bytes5( src );
+			return put_bits_bytes( bytes, 4, src, bytes, continue_at_case );
+		}
+		
+		public boolean put_varint84( long src, int continue_at_case, int nulls, int nulls_bits ) {
+			int bytes = bytes5( src );
+			return put_bits_bytes( bytes << nulls_bits | nulls, nulls_bits + 4, src, bytes, continue_at_case );
+		}
+		
+		public boolean put_varint( long src, int next_case ) {
+			
+			if( varint( src ) )
+				return true;
+			
+			slot.state = next_case;
+			mode       = VARINT;
 			return false;
 		}
 		
-		public boolean put_map_info(boolean null_key_present, boolean null_key_has_value, int keys_null_value_count, int next_case, int key_val_case, int next_field_case) {
-			int items = index_max();
+		private boolean varint() { return varint( u8_ ); }
+		
+		private boolean varint( long src ) {
 			
-			int null_key_bits = null_key_has_value ? 1 << 6 : 0;
-			
-			if (null_key_present)
-			{
-				null_key_bits |= 1 << 7;
-				if (--items == 0)
+			for( ; buffer.hasRemaining(); buffer.put( (byte) (0x80 | src) ), src >>>= 7 )
+				if( (src & 0x7F) == src )
 				{
-					put((byte) null_key_bits);
-					state(next_field_case);
+					buffer.put( (byte) src );
 					return true;
 				}
-			}
-			if (0 < keys_null_value_count)
+			u8_ = src;
+			return false;
+		}
+		
+		public static long zig_zag( long src, int right ) { return src << 1 ^ src >> right; }
+//endregion
+		
+		public boolean put_val( long src, int bytes, int next_case ) {
+			if( buffer.remaining() < bytes )
 			{
-				index_max(keys_null_value_count); //keys with null value
-				int keys_null_value_count_bytes = bytes4value(keys_null_value_count);
-				
-				items -= keys_null_value_count;
-				index2(items);//key-value items preserve
-				int key_val_count_bytes = bytes4value(items);
-				
-				put((byte) (null_key_bits | keys_null_value_count_bytes << 3 | key_val_count_bytes));
-				if (0 < items) put_val(items, key_val_count_bytes, 0);
-				put_val(keys_null_value_count, keys_null_value_count_bytes, 0);
-				
-				state(next_case);
+				put( src, bytes, next_case );
 				return false;
 			}
 			
-			state(key_val_case);
-			index_max(items);//key-value items
-			int bytes = bytes4value(items);
-			
-			put((byte) (null_key_bits | bytes));
-			put_val(items, bytes, 0);
+			put_val( src, bytes );
 			return true;
 		}
 		
-		
-		public boolean put_base_len(int base_len, int bytes, int next_case) {
-			slot.base_index_max = base_len;
-			slot.base_index     = 0;
-			return put_val((int) base_len, bytes, next_case);
+		public void put_val( long src, int bytes ) {
+			
+			switch( bytes )
+			{
+				case 8:
+					buffer.putLong( src );
+					return;
+				case 7:
+					buffer.putInt( (int) src );
+					buffer.putShort( (short) (src >> 32) );
+					buffer.put( (byte) (src >> 48) );
+					return;
+				case 6:
+					buffer.putInt( (int) src );
+					buffer.putShort( (short) (src >> 32) );
+					return;
+				case 5:
+					buffer.putInt( (int) src );
+					buffer.put( (byte) (src >> 32) );
+					return;
+				case 4:
+					buffer.putInt( (int) src );
+					return;
+				case 3:
+					buffer.putShort( (short) src );
+					buffer.put( (byte) (src >> 16) );
+					return;
+				case 2:
+					buffer.putShort( (short) src );
+					return;
+				case 1:
+					buffer.put( (byte) src );
+			}
 		}
 		
-		
-		public boolean put_val(int src, int bytes, int next_case) {
-			if (buffer.remaining() < bytes)
+		public boolean put_val( int src, int bytes, int next_case ) {
+			if( buffer.remaining() < bytes )
 			{
-				put(src, bytes, next_case);
+				put( src, bytes, next_case );
 				return false;
 			}
 			
-			put_val(src, bytes);
+			put_val( src, bytes );
 			return true;
 		}
 		
-		public void put_val(int src, int bytes) {
-			switch (bytes)
+		public void put_val( int src, int bytes ) {
+			switch( bytes )
 			{
 				case 4:
-					buffer.put((byte) (src >> 24 & 0xFF));
+					buffer.putInt( (int) src );
+					return;
 				case 3:
-					buffer.put((byte) (src >> 16 & 0xFF));
+					buffer.putShort( (short) src );
+					buffer.put( (byte) (src >> 16) );
+					return;
 				case 2:
-					buffer.put((byte) (src >> 8 & 0xFF));
+					buffer.putShort( (short) src );
+					return;
 				case 1:
-					buffer.put((byte) (src & 0xFF));
+					buffer.put( (byte) src );
 			}
 		}
 		
-		public boolean put(String str, int next_case) {
-			bytes_left = 0;
+		public boolean put( String src, int next_case ) {
+put:
+			{
+				u4 = -1; //indicate state before string length send
+				if( !varint( src.length() ) )
+					break put;
+				u4 = 0; //indicate state after string length sent
+				
+				while( u4 < src.length() )
+					if( !varint( src.charAt( u4++ ) ) )
+						break put;
+				return true;
+			}
 			
-			if (encode(str)) return true;
-			
-			slot.state           = next_case;
-			this.internal_string = str;
-			mode                 = STR;
+			slot.state = next_case; //switch to sending internally
+			str        = src;
+			mode       = STR;
 			return false;
 		}
 		
-		public boolean encode(String str) {
-			for (int len = str.length(); bytes_left < len; )
-			{
-				if (buffer.remaining() < 5) return false;//place for the longest character + one byte for 0xFF (string terminator)
-				
-				final char ch = str.charAt(bytes_left++);
-				
-				if (ch < 0x80) buffer.put((byte) ch);// Have at most seven bits
-				else if (ch < 0x800)
-				{
-					buffer.put((byte) (0xc0 | ch >> 6));// 2 bytes, 11 bits
-					buffer.put((byte) (0x80 | ch & 0x3f));
-				}
-				else if ('\uD800' <= ch && ch <= '\uDFFF')
-				{
-					int ch2 = str.charAt(bytes_left);
-					
-					if ('\uD800' <= ch2 && ch2 < '\uDBFF' + 1 && bytes_left + 1 < str.length())
-					{
-						final int ch3 = str.charAt(bytes_left + 1);
-						if ('\uDC00' <= ch3 && ch3 < '\uDFFF' + 1)
-							ch2 = (ch2 << 10) + ch3 + 0x010000 - ('\uD800' << 10) - '\uDC00';
-					}
-					
-					if (ch2 == ch) buffer.put((byte) '?');
-					else
-					{
-						buffer.put((byte) (0xf0 | ch2 >> 18));
-						buffer.put((byte) (0x80 | ch2 >> 12 & 0x3f));
-						buffer.put((byte) (0x80 | ch2 >> 6 & 0x3f));
-						buffer.put((byte) (0x80 | ch2 & 0x3f));
-						bytes_left++;  // 2 chars
-					}
-				}
-				else
-				{
-					buffer.put((byte) (0xe0 | ch >> 12));// 3 bytes, 16 bits
-					buffer.put((byte) (0x80 | ch >> 6 & 0x3f));
-					buffer.put((byte) (0x80 | ch & 0x3f));
-				}
-			}
-			if (buffer.remaining() == 0) return false;
-			buffer.put((byte) 0xFF); // string end sign
-			bytes_left = 0;
-			return true;
-		}
-		
-		private void put(int src, int bytes, int next_case) {
+		private void put( int src, int bytes, int next_case ) {
 			slot.state = next_case;
 			bytes_left = bytes;
 			u4         = src;
 			mode       = VAL4;
 		}
 		
-		private void put(long src, int bytes, int next_case) {
+		private void put( long src, int bytes, int next_case ) {
 			slot.state = next_case;
 			bytes_left = bytes;
 			u8         = src;
 			mode       = VAL8;
 		}
 		
-		public void retry_at(int the_case) {
+		public void retry_at( int the_case ) {
 			slot.state = the_case;
-			mode       = DONE;
+			mode       = RETRY;
 		}
 		
-		
-		public int bytes4value(int value) {return value < 0xFFFF ? value < 0xFF ? value == 0 ? 0 : 1 : 2 : value < 0xFFFFFF ? 3 : 4;}
-		
-		public boolean put(byte src, int next_case) {
-			if (buffer.hasRemaining())
+		public boolean put( byte src, int next_case ) {
+			if( buffer.hasRemaining() )
 			{
-				put(src);
+				put( src );
 				return true;
 			}
 			
-			put(src, 1, next_case);
+			put( src, 1, next_case );
 			return false;
 		}
 		
-		public void put(byte src) {buffer.put(src);}
+		public void put( byte src ) { buffer.put( src ); }
 		
-		public boolean put(short src, int next_case) {
-			if (buffer.remaining() < 2)
+		public boolean put( short src, int next_case ) {
+			if( buffer.remaining() < 2 )
 			{
-				put(src, 2, next_case);
+				put( src, 2, next_case );
 				return false;
 			}
 			
-			put(src);
+			put( src );
 			return true;
 		}
 		
-		public void put(short src) {buffer.putShort(src);}
+		public void put( short src ) { buffer.putShort( src ); }
 		
-		public boolean put(char src, int next_case) {
-			if (buffer.remaining() < 2)
+		public boolean put( char src, int next_case ) {
+			if( buffer.remaining() < 2 )
 			{
-				put(src, 2, next_case);
+				put( src, 2, next_case );
 				return false;
 			}
 			
-			put(src);
+			put( src );
 			return true;
 		}
 		
-		public void put(char src) {buffer.putChar(src);}
+		public void put( char src ) { buffer.putChar( src ); }
 		
-		public boolean put(int src, int next_case) {
-			if (buffer.remaining() < 4)
+		public boolean put( int src, int next_case ) {
+			if( buffer.remaining() < 4 )
 			{
-				put(src, 4, next_case);
+				put( src, 4, next_case );
 				return false;
 			}
 			
-			put(src);
+			put( src );
 			return true;
 		}
 		
-		public void put(int src) {buffer.putInt(src);}
+		public void put( int src ) { buffer.putInt( src ); }
 		
-		public boolean put(long src, int next_case) {
-			if (buffer.remaining() < 8)
+		public boolean put( long src, int next_case ) {
+			if( buffer.remaining() < 8 )
 			{
-				put(src, 8, next_case);
+				put( src, 8, next_case );
 				return false;
 			}
 			
-			put(src);
+			put( src );
 			return true;
 		}
 		
-		public void put(long src)                     {buffer.putLong(src);}
+		public void put( long src )                     { buffer.putLong( src ); }
 		
-		public void put(float src)                    {buffer.putFloat(src);}
+		public void put( float src )                    { buffer.putFloat( src ); }
 		
-		public boolean put(float src, int next_case)  {return put(Float.floatToIntBits(src), next_case);}
+		public boolean put( float src, int next_case )  { return put( Float.floatToIntBits( src ), next_case ); }
 		
-		public void put(double src)                   {buffer.putDouble(src);}
+		public void put( double src )                   { buffer.putDouble( src ); }
 		
-		public boolean put(double src, int next_case) {return put(Double.doubleToLongBits(src), next_case);}
-		//has data
-		public boolean isOpen() {return slot != null;}
+		public boolean put( double src, int next_case ) { return put( Double.doubleToLongBits( src ), next_case ); }
 		
-		//cleanup on close
-		public void close() {read(null);}
-		
-		@Override public String toString() {
+		@Override
+		public String toString() {
+			if( slot == null )
+				return super.toString() + " \uD83D\uDCA4 ";
 			Slot s = slot;
-			while (s.prev != null) s = s.prev;
-			StringBuilder str    = new StringBuilder();
+			while( s.prev != null )
+				s = s.prev;
+			StringBuilder str    = new StringBuilder( super.toString() + "\n" );
 			String        offset = "";
-			for (; s != slot; s = s.next, offset += "\t")
-			     str.append(offset).append(s.src.getClass().getCanonicalName()).append("\t").append(state()).append("\n");
+			for( ; s != slot; s = s.next, offset += "\t" )
+			     str.append( offset ).append( s.src.getClass().getCanonicalName() ).append( "\t" ).append( s.state ).append( "\n" );
 			
-			str.append(offset).append(s.src.getClass().getCanonicalName()).append("\t").append(state()).append("\n");
+			str.append( offset ).append( s.src.getClass().getCanonicalName() ).append( "\t" ).append( s.state ).append( "\n" );
 			
 			return str.toString();
 		}
 	}
+	
+	public static class Pool<T> {
+		
+		private SoftReference<ArrayList<T>> list = new SoftReference<>( new ArrayList<>( 3 ) );
+		final   Supplier<T>                 factory;
+		
+		public Pool( Supplier<T> factory ) { this.factory = factory; }
+		
+		public T get() {
+			ArrayList<T> list = this.list.get();
+			return list == null || list.isEmpty() ? factory.get() : list.remove( list.size() - 1 );
+		}
+		
+		public void put( T item ) {
+			ArrayList<T> list = this.list.get();
+			if( list == null )
+				this.list = new SoftReference<>( list = new ArrayList<>( 3 ) );
+			
+			list.add( item );
+		}
+	}
+	
+	public static final boolean debug_mode = java.lang.management.ManagementFactory.getRuntimeMXBean().getInputArguments().toString().indexOf( "jdwp" ) > 0;
+	
+	public static final class StackTracePrinter extends PrintStream {
+		private StackTracePrinter() {
+			super( new OutputStream() {
+				@Override
+				public void write( int b ) throws IOException { }
+			} );
+		}
+		
+		private AtomicReference<Thread> lock = new AtomicReference<>( null );
+		private StringBuilder           sb   = new StringBuilder();
+		
+		@Override
+		public PrintStream append( CharSequence csq ) {
+			sb.append( csq );
+			sb.append( '\n' );
+			return this;
+		}
+		
+		@Override
+		public PrintStream append( CharSequence csq, int start, int end ) {
+			sb.append( csq, start, end );
+			sb.append( '\n' );
+			return this;
+		}
+		
+		@Override
+		public void println( Object obj ) { sb.append( obj ).append( '\n' ); }
+		
+		String stackTrace( Throwable e ) {
+			while( !lock.compareAndSet( null, Thread.currentThread() ) )
+				Thread.onSpinWait();
+			e.printStackTrace( this );
+			String ret = sb.toString();
+			sb.setLength( 0 );
+			lock.set( null );
+			return ret;
+		}
+		
+		public static final StackTracePrinter ONE = new StackTracePrinter();
+	}
+	
+	public static class BytesAsCharSequence implements CharSequence {
+		//using regex over bytes array
+		//
+		//byte[] data = new byte[] { 'a', '\r', '\r', 'c' };
+		//Pattern p = Pattern.compile ("\r\n?|\n\r?");
+		//Matcher m = p.matcher (new ByteCharSequence (data));
+		//
+		//assertEquals (true, m.find (0));
+		//assertEquals (1, m.start ());
+		//assertEquals (2, m.end ());
+		//
+		//assertEquals (true, m.find (2));
+		//assertEquals (2, m.start ());
+		//assertEquals (3, m.end ());
+		//
+		//assertEquals (false, m.find (3));
+		public byte[] bytes;
+		public int    length;
+		public int    offset;
+		
+		public BytesAsCharSequence( byte[] bytes )                         { this( bytes, 0, bytes.length ); }
+		
+		public BytesAsCharSequence( byte[] bytes, int offset, int length ) { set( bytes, offset, length ); }
+		
+		public void set( byte[] bytes, int offset, int length ) {
+			this.bytes  = bytes;
+			this.offset = offset;
+			this.length = length;
+		}
+		
+		@Override
+		public int length() { return length; }
+		
+		@Override
+		public char charAt( int index ) { return (char) (bytes[offset + index] & 0xff); }
+		
+		@Override
+		public CharSequence subSequence( int start, int end ) { return new BytesAsCharSequence( bytes, offset + start, end - start ); }
+	}
+	
+	public interface ULong {
+		//-1
+		// ^
+		//Long.MIN_VALUE
+		// ^
+		//Long.MAX_VALUE
+		// ^
+		// 0
+		
+		//This code serves as a reminder of the specific functionalities provided in Java for handling unsigned long values.
+		//All other operations remain the same as those for signed long values.
+		static long divide( long dividend, long divisor ) { return Long.divideUnsigned( dividend, divisor ); }
+		
+		static long remainder( long dividend, long divisor )            { return Long.remainderUnsigned( dividend, divisor ); }
+		
+		static long parse( String string )                              { return Long.parseUnsignedLong( string, 10 ); }
+		
+		static int compare( long if_bigger_plus, long if_bigger_minus ) { return Long.compareUnsigned( if_bigger_plus, if_bigger_minus ); }
+		
+		static String toString( long ulong, int radix ) { //This is the most efficient way to get a string of an unsigned long in Java.
+			
+			if( 0 <= ulong )
+				return Long.toString( ulong, radix );
+			final long quotient = (ulong >>> 1) / radix << 1;
+			final long rem      = ulong - quotient * radix;
+			return rem < radix ? Long.toString( quotient, radix ) + Long.toString( rem, radix ) : Long.toString( quotient + 1, radix ) + Long.toString( rem - radix, radix );
+		}
+	}
+	
+	@Target( ElementType.TYPE_USE ) @interface NullableBool {
+		interface value {
+			static boolean hasValue( @NullableBool long src ) { return src != NULL; }
+			
+			static boolean get( @NullableBool long src )      { return src == 1; }
+			
+			static @NullableBool byte set( boolean src ) {
+				return src ? (byte) 1 : (byte) 0;
+			}
+			
+			static @NullableBool long to_null() { return NULL; }
+		}
+		
+		@NullableBool
+		long NULL = 2;
+	}
+	
+	//Decoding table for base64
+	private static final byte[] char2byte = new byte[256];
+	
+	static
+	{
+		for( int i = 'A'; i <= 'Z'; i++ )
+		     char2byte[i] = (byte) (i - 'A');
+		for( int i = 'a'; i <= 'z'; i++ )
+		     char2byte[i] = (byte) (i - 'a' + 26);
+		for( int i = '0'; i <= '9'; i++ )
+		     char2byte[i] = (byte) (i - '0' + 52);
+		char2byte['+'] = 62;
+		char2byte['/'] = 63;
+	}
+	
+	/**
+	 Decodes base64 encoded bytes in place.
+	 
+	 @param bytes    The byte array containing the base64 encoded bytes.
+	 @param srcIndex The starting index in the source array to begin decoding.
+	 @param dstIndex The starting index in the destination array to place decoded bytes.
+	 @param len      The length of the base64 encoded bytes to decode.
+	 @return The length of the decoded bytes.
+	 */
+	public static int base64decode( byte[] bytes, int srcIndex, int dstIndex, int len ) {
+		int max = srcIndex + len;
+		
+		//Adjust the length for padding characters
+		while( bytes[max - 1] == '=' )
+		{
+			max--;
+		}
+		
+		int newLen = max - srcIndex;
+		for( int i = newLen >> 2; i > 0; i-- )
+		{ //Process full 4-character blocks
+			int b = char2byte[bytes[srcIndex++]] << 18 |
+			        char2byte[bytes[srcIndex++]] << 12 |
+			        char2byte[bytes[srcIndex++]] << 6 |
+			        char2byte[bytes[srcIndex++]];
+			
+			bytes[dstIndex++] = (byte) (b >> 16);
+			bytes[dstIndex++] = (byte) (b >> 8);
+			bytes[dstIndex++] = (byte) b;
+		}
+		
+		switch( newLen & 3 )
+		{
+			case 3:
+				//If there are 3 characters remaining, decode them into 2 bytes
+				int b = char2byte[bytes[srcIndex++]] << 12 |
+				        char2byte[bytes[srcIndex++]] << 6 |
+				        char2byte[bytes[srcIndex]];
+				bytes[dstIndex++] = (byte) (b >> 10); //Extract first byte
+				bytes[dstIndex++] = (byte) (b >> 2);  //Extract second byte
+				break;
+			case 2:
+				//If there are 2 characters remaining, decode them into 1 byte
+				bytes[dstIndex++] = (byte) ((char2byte[bytes[srcIndex++]] << 6 | char2byte[bytes[srcIndex]]) >> 4);
+				break;
+		}
+		
+		return dstIndex;
+	}
+	
+	/**
+	 Creates a DNS TXT record request for a given domain.
+	 
+	 @param domain The domain to query.
+	 @return The byte array representing the DNS query request.
+	 */
+	private static byte[] create_DNS_TXT_Record_Request( String domain ) {
+		int id = new Random().nextInt( 65536 ); //Generate a random query ID
+		
+		byte[] request = new byte[12 + domain.length() + 2 + 4]; //Initialize the request packet
+		
+		//Set DNS header fields
+		request[0] = (byte) (id >> 8);
+		request[1] = (byte) (id & 0xFF);
+		request[2] = 0x01; //QR=0, OPCODE=0, AA=0, TC=0, RD=1
+		request[5] = 0x01; //QDCOUNT=1
+		
+		//Add the domain name to the question section
+		int index = 12;
+		int p     = index++;
+		
+		for( int i = 0, ch; i < domain.length(); i++ )
+			if( (ch = domain.charAt( i )) == '.' )
+			{
+				request[p] = (byte) (index - p - 1);
+				p          = index++;
+			}
+			else
+				request[index++] = (byte) ch;
+		
+		request[p] = (byte) (index - p - 1); //Set the length for the last label
+		
+		index += 2;              //Terminate domain name, set question type (TXT) and class (IN)
+		request[index++] = 0x10; //QTYPE = TXT
+		request[++index] = 0x01; //QCLASS = IN
+		
+		return request;
+	}
+	private static ByteBuffer[] parse_DNS_TXT_Record_Response( byte[] response ) {
+		int questionCount = (response[4] << 8) | response[5]; //Extract question and answer counts from the header
+		int answerCount   = (response[6] << 8) | response[7];
+		
+		int index = 12;
+		
+		for( int i = 0; i < questionCount; i++, index += 5 ) //Skip the question section
+			while( response[index] != 0 )
+				index += response[index] + 1;
+		
+		int          dst_index  = 0;
+		int          dst_index_ = 0;
+		ByteBuffer[] records    = new ByteBuffer[answerCount];
+		for( int i = 0; i < answerCount; i++ ) //Parse each answer
+		{
+			index += 2; //Skip NAME field
+			//TYPE            two octets containing one of the RR TYPE codes.
+			int TYPE = (response[index] << 8) | response[index + 1];
+			//CLASS           two octets containing one of the RR CLASS codes.
+			//
+			//TTL             a 32 bit signed integer that specifies the time interval
+			//                that the resource record may be cached before the source
+			//                of the information should again be consulted.  Zero
+			//                values are interpreted to mean that the RR can only be
+			//                used for the transaction in progress, and should not be
+			//                cached.  For example, SOA records are always distributed
+			//                with a zero TTL to prohibit caching.  Zero values can
+			//                also be used for extremely volatile data.
+			index += 8;                                                //Skip all above
+			int RDLENGTH = response[index] << 8 | response[index + 1]; //an unsigned 16 bit integer that specifies the length in  octets of the RDATA field.
+			index += 2;
+			//TXT-DATA        One or more <character-string>s. where <character-string> is a single length octet followed by that number of characters
+			//!!! attention records in reply may follow in arbitrary order
+			
+			if( TYPE == 16 ) //TXT record
+				for( int max = index + RDLENGTH; index < max; )
+				{
+					byte len = response[index++];
+					System.arraycopy( response, index, response, dst_index, len );
+					dst_index += len;
+					index += len;
+				}
+			
+			records[i] = ByteBuffer.wrap( response, dst_index_, dst_index - dst_index_ );
+			dst_index_ = dst_index;
+		}
+		
+		return records;
+	}
+	
+	private static InetAddress get_default_OS_dns_server() {
+		try
+		{
+			ProcessBuilder pb  = new ProcessBuilder( System.getProperty( "os.name" ).toLowerCase().contains( "win" ) ? new String[]{ "cmd.exe", "/c", "nslookup", "1.1.1.1" } : new String[]{ "/bin/sh", "-c", "nslookup", "1.1.1.1" } );
+			byte[]         out = pb.start().getInputStream().readAllBytes();
+			int            s   = 0;
+			while( out[s++] != ':' )
+				;
+			while( out[s++] != ':' )
+				;
+			int e = s += 2;
+			while( out[e] != '\n' && out[e] != '\r' )
+				e++;
+			return InetAddress.getByName( new String( out, s, e - s ) );
+		} catch( IOException e )
+		{
+		}
+		return null;
+	}
+	
+	//Using DNS as readonly key-value storage https://datatracker.ietf.org/doc/html/rfc1035
+	public static ByteBuffer[] value( String key ) {
+		try( DatagramSocket socket = new DatagramSocket() )
+		{
+			byte[]         request    = create_DNS_TXT_Record_Request( key );
+			DatagramPacket sendPacket = new DatagramPacket( request, request.length, get_default_OS_dns_server(), 53 );
+			socket.send( sendPacket );
+			
+			byte[]         receiveData   = new byte[1024];
+			DatagramPacket receivePacket = new DatagramPacket( receiveData, receiveData.length );
+			socket.receive( receivePacket );
+			
+			return parse_DNS_TXT_Record_Response( receivePacket.getData() );
+		} catch( Exception e )
+		{
+		}
+		
+		return null;
+	}
+	
+	/**
+	 Calculates the number of bytes required to encode a String using varint encoding.
+	 This method is a convenience wrapper that calls varint_bytes(String, int, int)
+	 with the full length of the input string.
+	 
+	 @param src The String to be encoded.
+	 @return The total number of bytes required for varint encoding of the entire string.
+	 */
+	public static int varint_bytes( String src ) { return varint_bytes( src, 0, src.length() ); }
+	
+	/**
+	 Calculates the number of bytes required to encode a portion of a String using varint encoding.
+	 <p>
+	 Varint encoding is a method of serializing integers using one or more bytes.
+	 Smaller numbers take fewer bytes. For Unicode characters:
+	 - ASCII characters (0-127) are encoded in 1 byte
+	 - Characters between 128 and 16,383 are encoded in 2 bytes
+	 - Characters between 16,384 and 65,535 are encoded in 3 bytes
+	 
+	 @param src      The String to be encoded.
+	 @param src_from The starting index (inclusive) in the string to begin calculation.
+	 @param src_to   The ending index (exclusive) in the string to end calculation.
+	 @return The total number of bytes required for varint encoding of the specified portion of the string.
+	 */
+	public static int varint_bytes( String src, int src_from, int src_to ) {
+		int  bytes = 0;
+		char ch;
+		// Determine the number of bytes needed for each character:
+		// - 1 byte for ASCII characters (0-127)
+		// - 2 bytes for characters between 128 and 16,383
+		// - 3 bytes for characters between 16,384 and 65,535
+		while( src_from < src_to )
+			bytes += (ch = src.charAt( src_from++ )) < 0x80 ? 1 : ch < 0x4000 ? 2 : 3;
+		
+		return bytes;
+	}
+	
+	/**
+	 Counts the number of characters that can be represented by a ByteBuffer containing varint-encoded data.
+	 <p>
+	 In varint encoding, the most significant bit (MSB) of each byte is used as a continuation flag:
+	 - If MSB is 0, it's the last byte of the current character.
+	 - If MSB is 1, there are more bytes for the current character.
+	 <p>
+	 This method counts complete characters by looking for bytes with MSB = 0.
+	 
+	 @param src The ByteBuffer containing varint-encoded data.
+	 @return The number of complete characters that can be represented by the input bytes.
+	 */
+	public static int varint_chars( ByteBuffer src ) {
+		int chars = 0;
+		// Increment the character count for each byte that doesn't have
+		// its most significant bit set (i.e., value < 128).
+		// This indicates the end of a varint-encoded character.
+		while( src.hasRemaining() )
+			if( -1 < src.get() ) chars++;
+		
+		return chars;
+	}
+	
+	/**
+	 Encodes a portion of a string into a ByteBuffer using varint encoding.
+	 
+	 @param src       The source string to encode.
+	 @param from_char The starting index in the source string.
+	 @param dst       The destination ByteBuffer.
+	 @return The index in the source string of the first character not processed yet.
+	 */
+	public static int varint( String src, int from_char, ByteBuffer dst ) {
+		for( int src_max = src.length(), ch; from_char < src_max; from_char++ )
+			if( (ch = src.charAt( from_char )) < 0x80 ) // Most frequent case: ASCII characters (0-127)
+			{
+				if( !dst.hasRemaining() ) break;
+				dst.put( (byte) ch );
+			}
+			else if( ch < 0x4_000 )
+			{
+				if( dst.remaining() < 2 ) break;
+				dst.put( (byte) (0x80 | ch) );
+				dst.put( (byte) (ch >> 7) );
+			}
+			else// Less frequent case
+			{
+				if( dst.remaining() < 3 ) break;
+				dst.put( (byte) (0x80 | ch) );
+				dst.put( (byte) (0x80 | ch >> 7) );
+				dst.put( (byte) (ch >> 14) );
+			}
+		
+		return from_char;
+	}
+	
+	/**
+	 Decodes a portion of a ByteBuffer into a string using varint decoding.
+	 
+	 @param src The source ByteBuffer to decode.
+	 @param ret A 32-bit integer containing two pieces of information:
+	 - Low 16 bits: The partial character value from a previous call (if any).
+	 - High 16 bits: The number of bits already processed for the partial character.
+	 @param dst The StringBuffer to append the decoded characters to.
+	 @return A 32-bit integer containing two pieces of information:
+	 - Low 16 bits: The partial character value (if decoding is incomplete).
+	 - High 8 bits: The number of bits processed for the partial character.
+	 This return value can be used as the 'ret' parameter in a subsequent call to continue decoding.
+	 */
+	public static int varint( ByteBuffer src, int ret, StringBuilder dst ) {
+		int  ch = ret & 0xFFFF;
+		byte s  = (byte) (ret >> 16);
+		int  b;
+		
+		while( src.hasRemaining() )
+			if( -1 < (b = src.get()) )
+			{
+				dst.append( (char) ((b & 0xFF) << s | ch) );// Combine the partial character with the current byte and append to StringBuilder
+				s  = 0;
+				ch = 0;
+			}
+			else
+			{
+				ch |= (b & 0x7F) << s;
+				s += 7;
+			}
+		
+		return s << 16 | ch; // Return the current state (partial character and shift) for potential continuation
+	}
+	
+	public static int varint_chars( byte[] src ) { return varint_chars( src, 0, src.length ); }
+	
+	/**
+	 Counts the number of characters that can be represented by a byte array containing varint-encoded data.
+	 <p>
+	 In varint encoding, the most significant bit (MSB) of each byte is used as a continuation flag:
+	 - If MSB is 0, it's the last byte of the current character.
+	 - If MSB is 1, there are more bytes for the current character.
+	 <p>
+	 This method counts complete characters by looking for bytes with MSB = 0.
+	 
+	 @param src The byte array containing varint-encoded data.
+	 @return The number of complete characters that can be represented by the input bytes.
+	 */
+	public static int varint_chars( byte[] src, int src_from, int src_to ) {
+		int chars = 0;
+		while( src_from < src_to )
+			if( -1 < src[src_from++] ) chars++;
+		
+		return chars;
+	}
+	
+	/**
+	 Encodes a portion of a string into a byte array using varint encoding.
+	 
+	 @param src      The source string to encode.
+	 @param src_from The starting index in the source string.
+	 @param dst      The destination byte array.
+	 @param dst_from The starting index in the destination byte array.
+	 @return A 64-bit unsigned integer containing two pieces of information:
+	 - High 32 bits: The index in the source string of the first character not processed
+	 (i.e., the next character to be encoded if the operation were to continue).
+	 - Low 32 bits: The number of bytes written to the destination array.
+	 <p>
+	 To extract these values:
+	 - Next character to process: (int)(result >> 32)
+	 - Bytes written: (int)(result & 0xFFFFFFFF)
+	 */
+	public static long varint( String src, int src_from, byte[] dst, int dst_from ) {
+		
+		for( int src_max = src.length(), dst_max = dst.length, ch; src_from < src_max; src_from++ )
+			if( (ch = src.charAt( src_from )) < 0x80 )
+			{
+				// Check if there's enough space in the destination array for 1 byte
+				if( dst_from == dst_max ) break;
+				dst[dst_from++] = (byte) ch;
+			}
+			else if( ch < 0x4_000 )
+			{
+				// Check if there's enough space in the destination array for 2 bytes
+				if( dst_max - dst_from < 2 ) break;
+				dst[dst_from++] = (byte) (0x80 | ch);
+				dst[dst_from++] = (byte) (ch >> 7);
+			}
+			else
+			{
+				// Check if there's enough space in the destination array for 3 bytes
+				if( dst_max - dst_from < 3 ) break;
+				dst[dst_from++] = (byte) (0x80 | ch);
+				dst[dst_from++] = (byte) (0x80 | ch >> 7);
+				dst[dst_from++] = (byte) (ch >> 14);
+			}
+		
+		// Return the result: high 32 bits contain the next character index to process,
+		// low 32 bits contain the number of bytes written to the destination array
+		return (long) src_from << 32 | dst_from;
+	}
+	
+	public static int varint( byte[] src, StringBuilder dst )                           { return varint( src, 0, src.length, 0, dst ); }
+	public static int varint( byte[] src, int ret, StringBuilder dst )                  { return varint( src, 0, src.length, ret, dst ); }
+	public static int varint( byte[] src, int src_from, int src_to, StringBuilder dst ) { return varint( src, src_from, 0, src_to, dst ); }
+	
+	/**
+	 Decodes a portion of a byte array into a string using varint decoding.
+	 
+	 @param src      The source byte array to decode.
+	 @param src_from The starting index in the source byte array.
+	 @param src_to   The ending index (exclusive) in the source byte array.
+	 @param ret      A 32-bit integer containing two pieces of information:
+	 - Low 16 bits: The partial character value from a previous call (if any).
+	 - High 16 bits: The number of bits already processed for the partial character.
+	 @param dst      The StringBuilder to append the decoded characters to.
+	 @return A 32-bit integer containing two pieces of information:
+	 - Low 16 bits: The partial character value (if decoding is incomplete).
+	 - High 8 bits: The number of bits processed for the partial character.
+	 This return value can be used as the 'ret' parameter in a subsequent call to continue decoding.
+	 */
+	public static int varint( byte[] src, int src_from, int src_to, int ret, StringBuilder dst ) {
+		int  ch = ret & 0xFFFF;
+		byte s  = (byte) (ret >> 16);
+		int  b;
+		
+		while( src_from < src_to )
+			if( -1 < (b = src[src_from++]) )
+			{
+				dst.append( (char) ((b & 0xFF) << s | ch) );
+				s  = 0;
+				ch = 0;
+			}
+			else
+			{
+				ch |= (b & 0x7F) << s;
+				s += 7;
+			}
+		
+		return s << 16 | ch;
+	}
+	
+	
 }
