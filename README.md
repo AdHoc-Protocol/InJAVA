@@ -20,3 +20,5 @@ That is why the AdHoc protocol in Java actively uses value packets. Each packet,
 ```java
    static @ValuePack long set(char src, @ValuePack long pack) {return (long)(pack & ~(255  << 32) | ((src) & (~0L))   << 32) ;}
 ```
+
+use  `-encoding UTF-8` command line parametr
