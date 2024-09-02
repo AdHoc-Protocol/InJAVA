@@ -180,8 +180,7 @@ public interface Network {
 				time -= timeout.toMillis();
 				time = Math.min( receive_time - time, transmit_time - time );
 				
-				if( 500 < time )
-					return time;
+				if( 500 < time ) return time;
 				
 				if( ext == null )
 					close_and_dispose();
@@ -204,9 +203,11 @@ public interface Network {
 						//
 						//Call the Close method to free all managed and unmanaged resources associated
 						//with the Socket. Do not attempt to reuse the Socket after closing.
-						ext.shutdownOutput();
+						
 						ext.shutdownInput();
+						ext.shutdownOutput();
 						ext.close();
+						closing = false;
 					} catch( IOException e ) {
 						host.onFailure.accept( this, e );
 					}
@@ -224,8 +225,7 @@ public interface Network {
 			
 			public void close_and_dispose() {
 				
-				if( receive_time_.getAndSet( this, FREE ) == FREE )
-					return;
+				if( receive_time_.getAndSet( this, FREE ) == FREE ) return;
 				
 				close();
 				if( transmitter != null )
@@ -266,21 +266,33 @@ public interface Network {
 				else
 					host.onFailure.accept( this, e );
 			}
+			// Java socket API limitation:
+			// The methods shutdownOutput() do not guarantee that all sent data has been transmitted to the peer.
+			// To ensure that all outgoing data is fully transmitted to the peer, it's necessary to close the socket with a reasonable delay.
+			
+			void closing() {
+				closing       = true;
+				receive_time = transmit_time = System.currentTimeMillis() +  3000 - timeout.toMillis();
+			}
+			
+			boolean closing = false;
 			
 			@Override
 			public void completed( Integer result, Object internal ) {
-				if( result == -1 ) {
-					host.onEvent.accept( this, internal == transmitter ? Event.INT_EXT_DISCONNECT : Event.EXT_INT_DISCONNECT );
-					close();
-				} else if( internal == transmitter ) {
-					transmit_time = System.currentTimeMillis();
-					transmit();
-				} else {
-					receive_time = System.currentTimeMillis();
-					receive_buffer.flip();
-					receive();
-				}
+				if( !closing )
+					if( result == -1 ) {
+						host.onEvent.accept( this, internal == transmitter ? Event.INT_EXT_DISCONNECT : Event.EXT_INT_DISCONNECT );
+						close();
+					} else if( internal == transmitter ) {
+						transmit_time = System.currentTimeMillis();
+						transmit();
+					} else {
+						receive_time = System.currentTimeMillis();
+						receive_buffer.flip();
+						receive();
+					}
 			}
+
 //#region Receiver
 			
 			public          DST     receiver;
@@ -1121,34 +1133,14 @@ receiving:
 			               InetSocketAddress... ips ) throws IOException {
 				super( name, new_channel, buffer_size, timeout );
 				
-				final Thread maintenance_thread = new Thread( "Maintain server " + name ) {
-					@Override
-					public synchronized void run() {
-						for( ; ; )
-							try {
-								wait( maintenance( System.currentTimeMillis() ) );
-							} catch( Exception ex ) {
-								onFailure.accept( this, ex );
-							}
-					}
-				};
-				
-				maintenance_thread.setDaemon( true );
-				maintenance_thread.start();
-				
-				maintenance_task = new RecursiveAction() {
-					@Override
-					protected void compute() {
-						synchronized( maintenance_thread ) {
-							maintenance_thread.notify();
-						}
-					}
-				};
 				
 				bind( ips );
 			}
 			
 			public ArrayList< AsynchronousServerSocketChannel > tcp_listeners = new ArrayList<>();
+			
+			@Override
+			public String toString() { return toString; }
 			
 			private String toString;
 			
@@ -1183,18 +1175,33 @@ receiving:
 				toString = sb.toString();
 			}
 			
-			@Override
-			public String toString() { return toString; }
 			
-			private final RecursiveAction maintenance_task;
+			private final Thread maintenance_thread = new Thread( "Maintain server " + name ) {
+				@Override
+				public synchronized void run() {
+					for( ; ; )
+						try {
+							wait( maintenance( System.currentTimeMillis() ) );
+						} catch( Exception ex ) {
+							onFailure.accept( this, ex );
+						}
+				}
+			};
 			
-			public void maintain() { executor.submit( maintenance_task ); } //kick maintenance
+			{
+				maintenance_thread.setDaemon( true );
+				maintenance_thread.start();
+			}
 			
-			public long minimal_maintain_timeout = 5000;
+			// Async forces the maintenance thread to wake up and perform maintenance immediately, 
+			// regardless of the current schedule or timeout.
+			public void maintenance() { maintenance_thread.notifyAll(); }
 			
-			//return timeout of next maintenance in milliseconds
-			public long maintenance( long time ) {
-				long timeout = minimal_maintain_timeout;
+			// This method iterates through all active channels to determine the time 
+			// for the next maintenance operation. It can be overridden if a different 
+			// maintenance calculation logic is required
+			protected long maintenance( long time ) {
+				long timeout = maintenance_duty_cycle;
 				for( Channel< SRC, DST > channel = channels; channel != null; channel = channel.next )
 					if( channel.is_active() )
 						timeout = Math.min( timeout, channel.maintenance( time ) );
@@ -1202,6 +1209,8 @@ receiving:
 				return timeout;
 			}
 			
+			// Minimum timeout duration for maintenance tasks in milliseconds.
+			public long maintenance_duty_cycle = 5000;
 			
 			public void shutdown() {
 				for( Closeable closeable : tcp_listeners )
