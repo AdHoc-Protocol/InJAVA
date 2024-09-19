@@ -272,7 +272,7 @@ public interface Network {
 			
 			void closing() {
 				closing       = true;
-				receive_time = transmit_time = System.currentTimeMillis() +  3000 - timeout.toMillis();
+				receive_time = transmit_time = System.currentTimeMillis() +  5000 - timeout.toMillis();
 			}
 			
 			boolean closing = false;
