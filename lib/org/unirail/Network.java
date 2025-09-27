@@ -183,8 +183,8 @@ public interface Network {
 			public String toString() {
 				try {
 					return isActive() ?
-					       String.format( "%s %s:%s", host.name, ext.getLocalAddress(), ext.getRemoteAddress() ) :
-					       String.format( "%s : closed", host.name );
+							String.format( "%s %s:%s", host.name, ext.getLocalAddress(), ext.getRemoteAddress() ) :
+							String.format( "%s : closed", host.name );
 				} catch( IOException ignored ) {
 				}
 				return super.toString();
@@ -524,45 +524,45 @@ public interface Network {
 								
 								String eventDescription;
 								String[] channelInfo = channel == null || channel.toString() == null ?
-								                       new String[]{ "", "" } :
-								                       channel.toString().split( ":", 2 );
+										new String[]{ "", "" } :
+										channel.toString().split( ":", 2 );
 								
 								if( Action.isConnect( event ) ) {
 									boolean isWebSocket = Mask.isWebSocket( event );
 									boolean isRemote    = Mask.isRemote( event );
 									eventDescription = isRemote ?
-									                   ( isWebSocket ?
-									                     "WebSocket connection established from " :
-									                     "Accepted connection from " ) :
-									                   ( isWebSocket ?
-									                     "WebSocket connected to " :
-									                     "Connected to " );
+											( isWebSocket ?
+													"WebSocket connection established from " :
+													"Accepted connection from " ) :
+											( isWebSocket ?
+													"WebSocket connected to " :
+													"Connected to " );
 								}
 								else if( Action.isClose( event ) ) {
 									boolean isWebSocket = Mask.isWebSocket( event );
 									boolean isGraceful  = Mask.isGraceful( event );
 									boolean isRemote    = Mask.isRemote( event );
 									String prefix = isWebSocket ?
-									                "WebSocket " :
-									                "";
+											"WebSocket " :
+											"";
 									if( isRemote ) {
 										eventDescription = isGraceful ?
-										                   "Remote peer gracefully closed " + prefix + "connection with " :
-										                   prefix + "Connection abruptly closed by remote peer with ";
+												"Remote peer gracefully closed " + prefix + "connection with " :
+												prefix + "Connection abruptly closed by remote peer with ";
 									}
 									else {
 										eventDescription = isGraceful ?
-										                   "Gracefully closed " + prefix + "connection to " :
-										                   "Abruptly closed " + prefix + "connection to ";
+												"Gracefully closed " + prefix + "connection to " :
+												"Abruptly closed " + prefix + "connection to ";
 									}
 								}
 								else if( Action.isTimeout( event ) ) {
 									boolean isTransmit = ( event & Mask.TRANSMIT ) != 0;
 									eventDescription = ( Mask.isWebSocket( event ) ?
-									                     "WebSocket " :
-									                     "" ) + "Timeout while " + ( isTransmit ?
-									                                                 "transmitting to " :
-									                                                 "receiving from " );
+											"WebSocket " :
+											"" ) + "Timeout while " + ( isTransmit ?
+											"transmitting to " :
+											"receiving from " );
 								}
 								else if( Action.isPing( event ) )
 									eventDescription = "PING received from ";
@@ -782,9 +782,9 @@ public interface Network {
 					if( result == -1 ) {
 						//End-of-stream: peer has gracefully closed its output.
 						int event = isClosingGracefully ?
-						            Event.THIS_CLOSE_GRACEFUL :
-						            //Peer acknowledged our close request.
-						            Event.REMOTE_CLOSE_GRACEFUL; //Peer initiated the close.
+								Event.THIS_CLOSE_GRACEFUL :
+								//Peer acknowledged our close request.
+								Event.REMOTE_CLOSE_GRACEFUL; //Peer initiated the close.
 						internal.OnExternalEvent( this, event );
 						closeAndDispose();
 					}
@@ -889,8 +889,8 @@ public interface Network {
 			@Override
 			public long TransmitTimeout() {
 				return isClosingGracefully ?
-				       -TransmitTimeout :
-				       TransmitTimeout;
+						-TransmitTimeout :
+						TransmitTimeout;
 			}
 			
 			/**
@@ -902,8 +902,8 @@ public interface Network {
 			@Override
 			public void TransmitTimeout( long timeout ) {
 				TransmitTimeout = timeout < 0 && ( isClosingGracefully = true ) ?
-				                  -timeout :
-				                  timeout;
+						-timeout :
+						timeout;
 			}
 			
 			/**
@@ -1046,8 +1046,8 @@ public interface Network {
 			 */
 			public long ReceiveTimeout() {
 				return isClosingGracefully ?
-				       -ReceiveTimeout :
-				       ReceiveTimeout;
+						-ReceiveTimeout :
+						ReceiveTimeout;
 			}
 			
 			/**
@@ -1160,8 +1160,8 @@ public interface Network {
 				do
 					lockValue = maintenance_lock;
 				while( !completedLock_.compareAndSet( this, lockValue, lockValue < 0 ?
-				                                                       lockValue :
-				                                                       lockValue + 1 ) );
+						lockValue :
+						lockValue + 1 ) );
 				return lockValue < 0;
 			}
 			
@@ -1173,8 +1173,8 @@ public interface Network {
 				do
 					lockValue = maintenance_lock;
 				while( !completedLock_.compareAndSet( this, lockValue, lockValue < 0 ?
-				                                                       lockValue :
-				                                                       Integer.MIN_VALUE + lockValue ) );
+						lockValue :
+						Integer.MIN_VALUE + lockValue ) );
 			}
 			
 			/**
@@ -1211,8 +1211,8 @@ public interface Network {
 			@Override
 			public void TransmitTimeout( long timeout ) {
 				super.TransmitTimeout( timeout < 0 && ( _wsCloseGracefully = true ) ?
-				                       -timeout :
-				                       timeout );
+						                       -timeout :
+						                       timeout );
 			}
 			
 			/**
@@ -1350,8 +1350,8 @@ public interface Network {
 				
 				//Reserve space in the buffer for the WebSocket header and a potential control frame.
 				int startPosition = dst.position( ( frameData != null ?
-				                                    frameData.buffer_bytes + 2 :
-				                                    0 ) + 10 ).position();
+						frameData.buffer_bytes + 2 :
+						0 ) + 10 ).position();
 				
 				//Attempt to read application data from the transmitter.
 				if( 0 < internal.BytesSrc().read( dst ) ) {
@@ -1708,9 +1708,9 @@ receivingLoop:
 							xor0 = 0;
 							if( 125 < ( frame_bytes_left = BYTE & Mask.LEN ) ) {
 								xor0             = frame_bytes_left == 126 ?
-								                   2 :
-								                   //2 bytes for 16-bit extended payload length
-								                   8; //8 bytes for 64-bit
+										2 :
+										//2 bytes for 16-bit extended payload length
+										8; //8 bytes for 64-bit
 								frame_bytes_left = 0;
 							}
 						
@@ -1764,8 +1764,8 @@ receivingLoop:
 								case OPCode.PONG:
 									internal.OnExternalEvent( this, Event.WEBSOCKET_PONG );
 									state = frame_bytes_left == 0 ?
-									        State.NEW_FRAME :
-									        State.DISCARD; //Discard any PONG payload.
+											State.NEW_FRAME :
+											State.DISCARD; //Discard any PONG payload.
 									continue;
 								default: //BINARY, TEXT, CONTINUATION
 									if( frame_bytes_left == 0 ) {
@@ -1857,8 +1857,8 @@ receivingLoop:
 						internal.BytesDst().write( receive_buffer );
 				}
 				state = frame_bytes_left == 0 ?
-				        State.NEW_FRAME :
-				        stateIfNoMoreBytes;
+						State.NEW_FRAME :
+						stateIfNoMoreBytes;
 				return true;
 			}
 			
@@ -1977,7 +1977,6 @@ receivingLoop:
 				private final    AtomicBoolean                                transmitLock   = new AtomicBoolean( false );
 				private volatile CompletableFuture< java.net.http.WebSocket > webSocketFuture;
 				
-				private final AtomicReference< CompletableFuture< INT > > connectionPromise = new AtomicReference<>();
 				
 				/**
 				 * Constructs a new WebSocket client adapter.
@@ -1993,7 +1992,9 @@ receivingLoop:
 					this.httpClient        = HttpClient.newHttpClient();
 					this.transmitBuffer    = ByteBuffer.allocateDirect( bufferSize ).order( ByteOrder.LITTLE_ENDIAN );
 					this.watchdogScheduler = Executors.newSingleThreadScheduledExecutor( r -> new Thread( r, "WebSocket-Watchdog-" + name ) {
-						{ setDaemon( true ); }
+						{
+							setDaemon( true );
+						}
 					} );
 					this.onFailure         = onFailure;
 				}
@@ -2007,37 +2008,41 @@ receivingLoop:
 				 *
 				 * @param server            The URI of the WebSocket server.
 				 * @param connectingTimeout The maximum duration to wait for the connection to be established.
-				 * @return A {@link CompletableFuture} that completes with the {@link INT} on success, or {@code null} on failure.
+				 * @return A {@link CompletableFuture} that completes with the {@link INT} on success,
+				 * or completes exceptionally on failure.
 				 */
 				public CompletableFuture< INT > connect( URI server, Duration connectingTimeout ) {
 					this.connectionInfo = String.format( " %s : %s", name, "closed" );
 					
 					CompletableFuture< INT > promise = new CompletableFuture<>();
-					if( !this.connectionPromise.compareAndSet( null, promise ) )
-						return this.connectionPromise.get();
+					if( !connectionPromise.compareAndSet( null, promise ) ) return connectionPromise.get();
 					
 					webSocketFuture = httpClient.newWebSocketBuilder()
 					                            .connectTimeout( connectingTimeout )
 					                            .buildAsync( server, external );
 					
-					webSocketFuture.whenComplete( ( ws, ex ) -> {
-						this.connectionInfo = String.format( " %s : %s", name, server );
-						if( ex != null ) {
-							onFailure.accept( this, ex );
-							CompletableFuture< INT > p = connectionPromise.getAndSet( null );
-							if( p != null )
-								p.complete( null );
-						}
-					} );
+					webSocketFuture.whenComplete(
+							( ws, ex ) -> {
+								this.connectionInfo = String.format( " %s : %s", name, server );
+								if( ex == null ) return;
+								onFailure.accept( this, ex );
+								CompletableFuture< INT > p = connectionPromise.getAndSet( null );
+								if( p != null ) p.completeExceptionally( ex );
+								
+							} );
 					
 					return promise;
 				}
+				
+				private final AtomicReference< CompletableFuture< INT > > connectionPromise = new AtomicReference<>();
+				
+				public boolean isConnecting() { return connectionPromise.get() != null; }
 				
 				/**
 				 * Connects to a WebSocket server with a default timeout of 5 seconds.
 				 *
 				 * @param server The URI of the WebSocket server.
-				 * @return A {@link CompletableFuture} that completes with the {@link INT} on success, or {@code null} on failure.
+				 * @return A {@link CompletableFuture} that completes with the {@link INT} on success, or completes exceptionally on failure.
 				 */
 				public CompletableFuture< INT > connect( URI server ) { return connect( server, Duration.ofSeconds( 5 ) ); }
 				
@@ -2079,15 +2084,15 @@ receivingLoop:
 					@Override
 					public long TransmitTimeout() {
 						return isClosingGracefully ?
-						       -TransmitTimeout :
-						       TransmitTimeout;
+								-TransmitTimeout :
+								TransmitTimeout;
 					}
 					
 					@Override
 					public void TransmitTimeout( long timeout ) {
 						TransmitTimeout = ( isClosingGracefully = timeout < 0 ) ?
-						                  -timeout :
-						                  timeout;
+								-timeout :
+								timeout;
 					}
 					
 					public long ReceiveTimeout = Integer.MAX_VALUE;
@@ -2095,8 +2100,8 @@ receivingLoop:
 					@Override
 					public long ReceiveTimeout() {
 						return isClosingGracefully ?
-						       -ReceiveTimeout :
-						       ReceiveTimeout;
+								-ReceiveTimeout :
+								ReceiveTimeout;
 					}
 					
 					@Override
@@ -2154,9 +2159,12 @@ receivingLoop:
 					 * promise and fires the connect event.
 					 */
 					@Override
+					@SuppressWarnings( "unchecked" )
+					
 					public void onOpen( java.net.http.WebSocket ws ) {
 						CompletableFuture< INT > promise = connectionPromise.getAndSet( null );
 						if( promise != null )
+							
 							promise.complete( ( INT ) Internal() );
 						
 						java.net.http.WebSocket.Listener.super.onOpen( ws );
@@ -2304,6 +2312,18 @@ receivingLoop:
 			 * The {@code AsynchronousChannelGroup} that manages resources for the server's channels.
 			 */
 			final               AsynchronousChannelGroup group    = AsynchronousChannelGroup.withThreadPool( executor );
+			
+			/**
+			 * Constructs and starts a new TCP Server with onFailure = onFailurePrintConsole and buffer_size = 1024
+			 *
+			 * @param name        A descriptive name for this server instance.
+			 * @param new_channel A factory function to create new {@link ExternalChannel} instances for accepted connections.
+			 * @param ips         An array of {@link InetSocketAddress} to bind the server to.
+			 * @throws IOException If a binding error occurs.
+			 */
+			public Server( String name,
+			               Function< TCP, ExternalChannel > new_channel,
+			               InetSocketAddress... ips ) throws IOException { this( name, new_channel, onFailurePrintConsole, 1024, ips ); }
 			
 			/**
 			 * Constructs and starts a new TCP Server.
@@ -2516,57 +2536,51 @@ receivingLoop:
 			 * the future will complete with a {@code null} result, and the failure will be
 			 * reported to the {@code onFailure} handler.
 			 *
-			 * @param server            The address of the server to connect to.
-			 * @param connectingTimeout The maximum duration to wait for the connection.
+			 * @param server  The address of the server to connect to.
+			 * @param timeout The maximum duration to wait for the connection.
 			 * @return A {@link CompletableFuture} that completes with the channel on success, or {@code null} on failure.
 			 */
-			public CompletableFuture< INT > connect( InetSocketAddress server, Duration connectingTimeout ) {
+			public CompletableFuture< INT > connect( InetSocketAddress server, Duration timeout ) {
 				this.toString = String.format( "Client %s -> %s", name, server );
-				CompletableFuture< INT > connectionPromise = new CompletableFuture<>();
+				CompletableFuture< INT > promise = new CompletableFuture<>();
+				if( !connectionPromise.compareAndSet( null, promise ) ) return connectionPromise.get();
 				
-				try {
-					( channels.ext = AsynchronousSocketChannel.open() ).connect( server, connectionPromise, on_connecting );
-				} catch( IOException e ) {
-					super.onFailure.accept( this, e );
-					connectionPromise.complete( null );
-					return connectionPromise;
+				try { ( channels.ext = AsynchronousSocketChannel.open() ).connect( server, promise, onConnecting ); } catch( IOException e ) {
+					onFailure.accept( this, e );
+					promise.completeExceptionally( e );
 				}
 				
-				//Handle timeout and other connection failures gracefully.
-				return connectionPromise.orTimeout( connectingTimeout.toMillis(), TimeUnit.MILLISECONDS )
-				                        .handle( ( channel, ex ) -> {
-					                        if( ex != null ) {
-						                        onFailure.accept( this, ex.getCause() != null ?
-						                                                ex.getCause() :
-						                                                ex );
-						                        return null; //Return null on any failure.
-					                        }
-					                        return channel; //Return channel on success.
-				                        } );
+				return promise
+						.orTimeout( timeout.toMillis(), TimeUnit.MILLISECONDS )
+						.whenComplete(
+								( channel, ex ) -> {
+									if( ex != null )
+										onFailure.accept( this, ex.getCause() != null ?
+												ex.getCause() :
+												ex );
+									
+								} );
 			}
+			
+			private final AtomicReference< CompletableFuture< INT > > connectionPromise = new AtomicReference<>();
+			
+			public boolean isConnecting() { return connectionPromise.get() != null; }
 			
 			/**
 			 * A {@code CompletionHandler} for the asynchronous connection attempt.
 			 */
-			private final CompletionHandler< Void, CompletableFuture< INT > > on_connecting = new CompletionHandler<>() {
+			@SuppressWarnings( "unchecked" )
+			private final CompletionHandler< Void, CompletableFuture< INT > > onConnecting = new CompletionHandler<>() {
 				@Override
 				public void completed( Void v, CompletableFuture< INT > promise ) {
-					//First, complete the promise. This signals to the user's code that the connection
-					//is established and the internal channel handler is ready for use. The internal
-					//handler is configured in the Client's constructor, so the user does not need
-					//to initialize it here.
-					promise.complete( ( INT ) channels.Internal() );
-					
-					//Second, call the connection setup method. This fires the THIS_CONNECT event,
-					//which the user is now ready to receive and can begin data transmission.
-					channels.transmitterConnected();
+					try {
+						promise.complete( ( INT ) channels.Internal() );
+						channels.transmitterConnected();
+					} catch( Throwable t ) { promise.completeExceptionally( t ); }
 				}
 				
 				@Override
-				public void failed( Throwable t, CompletableFuture< INT > promise ) {
-					//Completing exceptionally will be caught by the .handle() block in connect().
-					promise.completeExceptionally( t );
-				}
+				public void failed( Throwable t, CompletableFuture< INT > promise ) { promise.completeExceptionally( t ); }
 			};
 			
 			private String toString;
