@@ -183,8 +183,8 @@ public interface Network {
 			public String toString() {
 				try {
 					return isActive() ?
-							String.format( "%s %s:%s", host.name, ext.getLocalAddress(), ext.getRemoteAddress() ) :
-							String.format( "%s : closed", host.name );
+					       String.format( "%s %s:%s", host.name, ext.getLocalAddress(), ext.getRemoteAddress() ) :
+					       String.format( "%s : closed", host.name );
 				} catch( IOException ignored ) {
 				}
 				return super.toString();
@@ -524,45 +524,45 @@ public interface Network {
 								
 								String eventDescription;
 								String[] channelInfo = channel == null || channel.toString() == null ?
-										new String[]{ "", "" } :
-										channel.toString().split( ":", 2 );
+								                       new String[]{ "", "" } :
+								                       channel.toString().split( ":", 2 );
 								
 								if( Action.isConnect( event ) ) {
 									boolean isWebSocket = Mask.isWebSocket( event );
 									boolean isRemote    = Mask.isRemote( event );
 									eventDescription = isRemote ?
-											( isWebSocket ?
-													"WebSocket connection established from " :
-													"Accepted connection from " ) :
-											( isWebSocket ?
-													"WebSocket connected to " :
-													"Connected to " );
+									                   ( isWebSocket ?
+									                     "WebSocket connection established from " :
+									                     "Accepted connection from " ) :
+									                   ( isWebSocket ?
+									                     "WebSocket connected to " :
+									                     "Connected to " );
 								}
 								else if( Action.isClose( event ) ) {
 									boolean isWebSocket = Mask.isWebSocket( event );
 									boolean isGraceful  = Mask.isGraceful( event );
 									boolean isRemote    = Mask.isRemote( event );
 									String prefix = isWebSocket ?
-											"WebSocket " :
-											"";
+									                "WebSocket " :
+									                "";
 									if( isRemote ) {
 										eventDescription = isGraceful ?
-												"Remote peer gracefully closed " + prefix + "connection with " :
-												prefix + "Connection abruptly closed by remote peer with ";
+										                   "Remote peer gracefully closed " + prefix + "connection with " :
+										                   prefix + "Connection abruptly closed by remote peer with ";
 									}
 									else {
 										eventDescription = isGraceful ?
-												"Gracefully closed " + prefix + "connection to " :
-												"Abruptly closed " + prefix + "connection to ";
+										                   "Gracefully closed " + prefix + "connection to " :
+										                   "Abruptly closed " + prefix + "connection to ";
 									}
 								}
 								else if( Action.isTimeout( event ) ) {
 									boolean isTransmit = ( event & Mask.TRANSMIT ) != 0;
 									eventDescription = ( Mask.isWebSocket( event ) ?
-											"WebSocket " :
-											"" ) + "Timeout while " + ( isTransmit ?
-											"transmitting to " :
-											"receiving from " );
+									                     "WebSocket " :
+									                     "" ) + "Timeout while " + ( isTransmit ?
+									                                                 "transmitting to " :
+									                                                 "receiving from " );
 								}
 								else if( Action.isPing( event ) )
 									eventDescription = "PING received from ";
@@ -782,9 +782,9 @@ public interface Network {
 					if( result == -1 ) {
 						//End-of-stream: peer has gracefully closed its output.
 						int event = isClosingGracefully ?
-								Event.THIS_CLOSE_GRACEFUL :
-								//Peer acknowledged our close request.
-								Event.REMOTE_CLOSE_GRACEFUL; //Peer initiated the close.
+						            Event.THIS_CLOSE_GRACEFUL :
+						            //Peer acknowledged our close request.
+						            Event.REMOTE_CLOSE_GRACEFUL; //Peer initiated the close.
 						internal.OnExternalEvent( this, event );
 						closeAndDispose();
 					}
@@ -889,8 +889,8 @@ public interface Network {
 			@Override
 			public long TransmitTimeout() {
 				return isClosingGracefully ?
-						-TransmitTimeout :
-						TransmitTimeout;
+				       -TransmitTimeout :
+				       TransmitTimeout;
 			}
 			
 			/**
@@ -902,8 +902,8 @@ public interface Network {
 			@Override
 			public void TransmitTimeout( long timeout ) {
 				TransmitTimeout = timeout < 0 && ( isClosingGracefully = true ) ?
-						-timeout :
-						timeout;
+				                  -timeout :
+				                  timeout;
 			}
 			
 			/**
@@ -1046,8 +1046,8 @@ public interface Network {
 			 */
 			public long ReceiveTimeout() {
 				return isClosingGracefully ?
-						-ReceiveTimeout :
-						ReceiveTimeout;
+				       -ReceiveTimeout :
+				       ReceiveTimeout;
 			}
 			
 			/**
@@ -1160,8 +1160,8 @@ public interface Network {
 				do
 					lockValue = maintenance_lock;
 				while( !completedLock_.compareAndSet( this, lockValue, lockValue < 0 ?
-						lockValue :
-						lockValue + 1 ) );
+				                                                       lockValue :
+				                                                       lockValue + 1 ) );
 				return lockValue < 0;
 			}
 			
@@ -1173,8 +1173,8 @@ public interface Network {
 				do
 					lockValue = maintenance_lock;
 				while( !completedLock_.compareAndSet( this, lockValue, lockValue < 0 ?
-						lockValue :
-						Integer.MIN_VALUE + lockValue ) );
+				                                                       lockValue :
+				                                                       Integer.MIN_VALUE + lockValue ) );
 			}
 			
 			/**
@@ -1211,8 +1211,8 @@ public interface Network {
 			@Override
 			public void TransmitTimeout( long timeout ) {
 				super.TransmitTimeout( timeout < 0 && ( _wsCloseGracefully = true ) ?
-						                       -timeout :
-						                       timeout );
+				                       -timeout :
+				                       timeout );
 			}
 			
 			/**
@@ -1350,8 +1350,8 @@ public interface Network {
 				
 				//Reserve space in the buffer for the WebSocket header and a potential control frame.
 				int startPosition = dst.position( ( frameData != null ?
-						frameData.buffer_bytes + 2 :
-						0 ) + 10 ).position();
+				                                    frameData.buffer_bytes + 2 :
+				                                    0 ) + 10 ).position();
 				
 				//Attempt to read application data from the transmitter.
 				if( 0 < internal.BytesSrc().read( dst ) ) {
@@ -1708,9 +1708,9 @@ receivingLoop:
 							xor0 = 0;
 							if( 125 < ( frame_bytes_left = BYTE & Mask.LEN ) ) {
 								xor0             = frame_bytes_left == 126 ?
-										2 :
-										//2 bytes for 16-bit extended payload length
-										8; //8 bytes for 64-bit
+								                   2 :
+								                   //2 bytes for 16-bit extended payload length
+								                   8; //8 bytes for 64-bit
 								frame_bytes_left = 0;
 							}
 						
@@ -1764,8 +1764,8 @@ receivingLoop:
 								case OPCode.PONG:
 									internal.OnExternalEvent( this, Event.WEBSOCKET_PONG );
 									state = frame_bytes_left == 0 ?
-											State.NEW_FRAME :
-											State.DISCARD; //Discard any PONG payload.
+									        State.NEW_FRAME :
+									        State.DISCARD; //Discard any PONG payload.
 									continue;
 								default: //BINARY, TEXT, CONTINUATION
 									if( frame_bytes_left == 0 ) {
@@ -1857,8 +1857,8 @@ receivingLoop:
 						internal.BytesDst().write( receive_buffer );
 				}
 				state = frame_bytes_left == 0 ?
-						State.NEW_FRAME :
-						stateIfNoMoreBytes;
+				        State.NEW_FRAME :
+				        stateIfNoMoreBytes;
 				return true;
 			}
 			
@@ -1977,7 +1977,6 @@ receivingLoop:
 				private final    AtomicBoolean                                transmitLock   = new AtomicBoolean( false );
 				private volatile CompletableFuture< java.net.http.WebSocket > webSocketFuture;
 				
-				
 				/**
 				 * Constructs a new WebSocket client adapter.
 				 *
@@ -2015,7 +2014,8 @@ receivingLoop:
 					this.connectionInfo = String.format( " %s : %s", name, "closed" );
 					
 					CompletableFuture< INT > promise = new CompletableFuture<>();
-					if( !connectionPromise.compareAndSet( null, promise ) ) return connectionPromise.get();
+					if( !connectionPromise.compareAndSet( null, promise ) )
+						return connectionPromise.get();
 					
 					webSocketFuture = httpClient.newWebSocketBuilder()
 					                            .connectTimeout( connectingTimeout )
@@ -2027,8 +2027,8 @@ receivingLoop:
 								if( ex == null ) return;
 								onFailure.accept( this, ex );
 								CompletableFuture< INT > p = connectionPromise.getAndSet( null );
-								if( p != null ) p.completeExceptionally( ex );
-								
+								if( p != null )
+									p.completeExceptionally( ex );
 							} );
 					
 					return promise;
@@ -2037,6 +2037,12 @@ receivingLoop:
 				private final AtomicReference< CompletableFuture< INT > > connectionPromise = new AtomicReference<>();
 				
 				public boolean isConnecting() { return connectionPromise.get() != null; }
+				
+				public boolean isConnected() {
+					if( webSocketFuture == null || !webSocketFuture.isDone() || webSocketFuture.isCompletedExceptionally() ) return false;
+					java.net.http.WebSocket ws = webSocketFuture.getNow( null );
+					return ws != null && !ws.isInputClosed() && !ws.isOutputClosed();
+				}
 				
 				/**
 				 * Connects to a WebSocket server with a default timeout of 5 seconds.
@@ -2084,15 +2090,15 @@ receivingLoop:
 					@Override
 					public long TransmitTimeout() {
 						return isClosingGracefully ?
-								-TransmitTimeout :
-								TransmitTimeout;
+						       -TransmitTimeout :
+						       TransmitTimeout;
 					}
 					
 					@Override
 					public void TransmitTimeout( long timeout ) {
 						TransmitTimeout = ( isClosingGracefully = timeout < 0 ) ?
-								-timeout :
-								timeout;
+						                  -timeout :
+						                  timeout;
 					}
 					
 					public long ReceiveTimeout = Integer.MAX_VALUE;
@@ -2100,8 +2106,8 @@ receivingLoop:
 					@Override
 					public long ReceiveTimeout() {
 						return isClosingGracefully ?
-								-ReceiveTimeout :
-								ReceiveTimeout;
+						       -ReceiveTimeout :
+						       ReceiveTimeout;
 					}
 					
 					@Override
@@ -2205,6 +2211,11 @@ receivingLoop:
 					@Override
 					public void onError( java.net.http.WebSocket ws, Throwable e ) {
 						onFailure.accept( Client.this, e );
+						// If an error occurs during the connection phase, ensure the promise is failed.
+						CompletableFuture< INT > promise = connectionPromise.getAndSet( null );
+						if( promise != null ) {
+							promise.completeExceptionally( e );
+						}
 						if( internal != null )
 							internal.OnExternalEvent( this, Event.WEBSOCKET_REMOTE_CLOSE_ABRUPTLY );
 						shutdownScheduler();
@@ -2554,17 +2565,19 @@ receivingLoop:
 						.orTimeout( timeout.toMillis(), TimeUnit.MILLISECONDS )
 						.whenComplete(
 								( channel, ex ) -> {
+									connectionPromise.set( null ); // Reset state when connection attempt finishes.
 									if( ex != null )
 										onFailure.accept( this, ex.getCause() != null ?
-												ex.getCause() :
-												ex );
-									
+										                        ex.getCause() :
+										                        ex );
 								} );
 			}
 			
 			private final AtomicReference< CompletableFuture< INT > > connectionPromise = new AtomicReference<>();
 			
 			public boolean isConnecting() { return connectionPromise.get() != null; }
+			
+			public boolean isConnected()  { return !isConnecting() && channels != null && channels.ext != null && channels.ext.isOpen(); }
 			
 			/**
 			 * A {@code CompletionHandler} for the asynchronous connection attempt.
@@ -2576,7 +2589,9 @@ receivingLoop:
 					try {
 						promise.complete( ( INT ) channels.Internal() );
 						channels.transmitterConnected();
-					} catch( Throwable t ) { promise.completeExceptionally( t ); }
+					} catch( Throwable t ) {
+						promise.completeExceptionally( t );
+					}
 				}
 				
 				@Override
