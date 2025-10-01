@@ -1975,6 +1975,7 @@ receivingLoop:
 				private final    ScheduledExecutorService                     watchdogScheduler;
 				private final    AtomicReference< ScheduledFuture< ? > >      watchdogFuture = new AtomicReference<>();
 				private final    AtomicBoolean                                transmitLock   = new AtomicBoolean( false );
+				private final    AtomicBoolean                                connected      = new AtomicBoolean( false );
 				private volatile CompletableFuture< java.net.http.WebSocket > webSocketFuture;
 				
 				/**
@@ -2011,11 +2012,12 @@ receivingLoop:
 				 * or completes exceptionally on failure.
 				 */
 				public CompletableFuture< INT > connect( URI server, Duration connectingTimeout ) {
+					if( isConnected() ) throw new IllegalStateException( "Client is already connected. Close the existing connection before attempting a new one." );
 					this.connectionInfo = String.format( " %s : %s", name, "closed" );
 					
 					CompletableFuture< INT > promise = new CompletableFuture<>();
-					if( !connectionPromise.compareAndSet( null, promise ) )
-						return connectionPromise.get();
+					if( !connectionPromise.compareAndSet( null, promise ) ) return connectionPromise.get();
+					
 					
 					webSocketFuture = httpClient.newWebSocketBuilder()
 					                            .connectTimeout( connectingTimeout )
@@ -2038,11 +2040,7 @@ receivingLoop:
 				
 				public boolean isConnecting() { return connectionPromise.get() != null; }
 				
-				public boolean isConnected() {
-					if( webSocketFuture == null || !webSocketFuture.isDone() || webSocketFuture.isCompletedExceptionally() ) return false;
-					java.net.http.WebSocket ws = webSocketFuture.getNow( null );
-					return ws != null && !ws.isInputClosed() && !ws.isOutputClosed();
-				}
+				public boolean isConnected()  { return connected.get(); }
 				
 				/**
 				 * Connects to a WebSocket server with a default timeout of 5 seconds.
@@ -2168,10 +2166,9 @@ receivingLoop:
 					@SuppressWarnings( "unchecked" )
 					
 					public void onOpen( java.net.http.WebSocket ws ) {
+						connected.set( true );
 						CompletableFuture< INT > promise = connectionPromise.getAndSet( null );
-						if( promise != null )
-							
-							promise.complete( ( INT ) Internal() );
+						if( promise != null ) promise.complete( ( INT ) Internal() );
 						
 						java.net.http.WebSocket.Listener.super.onOpen( ws );
 						resetReceiveTimeout( ws );
@@ -2202,8 +2199,8 @@ receivingLoop:
 					
 					@Override
 					public CompletionStage< ? > onClose( java.net.http.WebSocket webSocket, int statusCode, String reason ) {
-						if( internal != null )
-							internal.OnExternalEvent( this, Event.WEBSOCKET_REMOTE_CLOSE_GRACEFUL );
+						connected.set( false );
+						if( internal != null ) internal.OnExternalEvent( this, Event.WEBSOCKET_REMOTE_CLOSE_GRACEFUL );
 						shutdownScheduler();
 						return java.net.http.WebSocket.Listener.super.onClose( webSocket, statusCode, reason );
 					}
@@ -2535,9 +2532,7 @@ receivingLoop:
 			 * @param server The address of the server to connect to.
 			 * @return A {@link CompletableFuture} that completes with the {@link INT} on success.
 			 */
-			public CompletableFuture< INT > connect( InetSocketAddress server ) {
-				return connect( server, Duration.ofSeconds( 5 ) );
-			}
+			public CompletableFuture< INT > connect( InetSocketAddress server ) { return connect( server, Duration.ofSeconds( 5 ) ); }
 			
 			/**
 			 * Connects to a server with a specified timeout.
@@ -2552,6 +2547,8 @@ receivingLoop:
 			 * @return A {@link CompletableFuture} that completes with the channel on success, or {@code null} on failure.
 			 */
 			public CompletableFuture< INT > connect( InetSocketAddress server, Duration timeout ) {
+				if( isConnected() ) throw new IllegalStateException( "Client is already connected. Close the existing connection before attempting a new one." );
+				
 				this.toString = String.format( "Client %s -> %s", name, server );
 				CompletableFuture< INT > promise = new CompletableFuture<>();
 				if( !connectionPromise.compareAndSet( null, promise ) ) return connectionPromise.get();
@@ -2577,7 +2574,7 @@ receivingLoop:
 			
 			public boolean isConnecting() { return connectionPromise.get() != null; }
 			
-			public boolean isConnected()  { return !isConnecting() && channels != null && channels.ext != null && channels.ext.isOpen(); }
+			public boolean isConnected()  { return channels != null && channels.isActive(); }
 			
 			/**
 			 * A {@code CompletionHandler} for the asynchronous connection attempt.
